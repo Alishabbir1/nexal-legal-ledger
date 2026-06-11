@@ -1,0 +1,7 @@
+__pycache__/
+*.db
+*.db.pre_*
+backups/
+installer_output.zip
+installer_output (2).zip
+*.log

@@ -1,0 +1,15 @@
+Flask==3.0.0
+reportlab==4.0.7
+openpyxl==3.1.2
+PyPDF2==3.0.1
+python-docx==1.1.0
+cryptography>=41.0.0
+# Desktop app dependencies (fix PyInstaller ModuleNotFoundError in pyi_rth_pkgres)
+jaraco.functools
+jaraco.context
+jaraco.text
+platformdirs
+pystray==0.19.5
+Pillow==10.2.0
+pywebview==5.1
+pyinstaller==6.3.0

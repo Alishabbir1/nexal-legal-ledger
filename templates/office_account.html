@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>Office Account</h2>
+    <p style="margin: 10px 0 20px 0; color: #666;">
+        Firm's own money (profit) — fees earned, transfers from client matters, and office expenses.
+    </p>
+    
+    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+        <a href="{{ url_for('office_add_income') }}" class="btn">Add Office Income</a>
+        <a href="{{ url_for('office_add_expense') }}" class="btn btn-secondary">Add Office Expense</a>
+    </div>
+    
+    <div class="stat-grid">
+        <div class="stat-card">
+            <div class="stat-label">Total Office Income (Cleared)</div>
+            <div class="stat-value success">£{{ "{:,.2f}".format(office_income) }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Total Office Expenses (Cleared)</div>
+            <div class="stat-value danger">£{{ "{:,.2f}".format(office_expenses) }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Net Office Balance (Profit)</div>
+            <div class="stat-value accent">£{{ "{:,.2f}".format(office_balance) }}</div>
+            <div class="stat-sub">Cleared transactions only</div>
+        </div>
+        {% if pending_total > 0 %}
+        <div class="stat-card">
+            <div class="stat-label">Pending Cheques</div>
+            <div class="stat-value warning">£{{ "{:,.2f}".format(pending_total) }}</div>
+            <div class="stat-sub">Not included in balance</div>
+        </div>
+        {% endif %}
+    </div>
+    
+    <form method="GET" style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: end;">
+        <div class="form-group" style="margin: 0; flex: 1; min-width: 150px;">
+            <label>From Date:</label>
+            <input type="date" name="date_from" value="{{ date_from }}">
+        </div>
+        <div class="form-group" style="margin: 0; flex: 1; min-width: 150px;">
+            <label>To Date:</label>
+            <input type="date" name="date_to" value="{{ date_to }}">
+        </div>
+        <div style="flex: 0;">
+            <button type="submit" class="btn">Filter</button>
+        </div>
+    </form>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Transaction ID</th>
+                <th>Date</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th>Reference</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Description / Client</th>
+                <th>Created By</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for trans in transactions %}
+            {% set status = trans.get('status') or 'Cleared' %}
+            <tr{% if status == 'Pending' %} style="background-color: #fffbe6;"{% elif status == 'Declined' %} style="background-color: #fff0f0; opacity: 0.7;"{% endif %}>
+                <td><code>{{ trans.transaction_id or '-' }}</code></td>
+                <td>{{ trans.transaction_date }}</td>
+                <td>{{ trans.transaction_type }}{% if status == 'Pending' %} <small style="color:#e67e22; font-weight:600;">(Pending)</small>{% endif %}</td>
+                {% set is_positive = trans.amount|float >= 0 %}
+                <td class="{% if is_positive %}amount-positive{% else %}amount-negative{% endif %}{% if status == 'Pending' %}" style="opacity: 0.6;{% elif status == 'Declined' %}" style="text-decoration: line-through;{% endif %}">
+                    {% if is_positive %}+{% else %}-{% endif %}£{{ "{:,.2f}".format(trans.amount|abs) }}
+                </td>
+                <td>{{ trans.reference }}</td>
+                <td>{{ trans.source }}</td>
+                <td>
+                    {% if status == 'Pending' %}
+                    <span class="status-badge status-pending" title="Cheque awaiting clearance - does not affect balance">Pending Cheque</span>
+                    {% elif status == 'Declined' %}
+                    <span class="status-badge status-declined" title="Cheque was declined - not counted in balance">Declined</span>
+                    {% if trans.get('decline_reason') %}
+                    <br><small style="color:#721c24;">{{ trans.decline_reason }}</small>
+                    {% endif %}
+                    {% else %}
+                    <span class="status-badge status-cleared">Cleared</span>
+                    {% endif %}
+                </td>
+                <td>{{ trans.description or (trans.client_code ~ ' - ' ~ trans.client_name if trans.client_code else '-') }}</td>
+                <td>{{ trans.created_by or 'System' }}</td>
+                <td>
+                    {% if trans.source == 'Cheque' and status == 'Pending' and trans.get('office_cashbook_id') %}
+                    {# Cheque clearance is operational - allowed for Admin and Staff #}
+                    {% if current_role in ('admin', 'staff') %}
+                    <form id="clear-office-form-{{ trans.office_cashbook_id }}" method="POST" action="{{ url_for('update_office_cashbook_status', transaction_id=trans.office_cashbook_id) }}" style="display: inline;">
+                        <input type="hidden" name="status" value="Cleared">
+                        <button type="button" class="btn btn-success clear-office-cheque-btn" data-form-id="clear-office-form-{{ trans.office_cashbook_id }}" style="padding: 5px 10px; font-size: 12px;">Clear</button>
+                    </form>
+                    {% endif %}
+                    {% if current_role in ('admin', 'staff') %}
+                    <form id="decline-office-form-{{ trans.office_cashbook_id }}" method="POST" action="{{ url_for('update_office_cashbook_status', transaction_id=trans.office_cashbook_id) }}" style="display: inline;">
+                        <input type="hidden" name="status" value="Declined">
+                        <input type="hidden" name="decline_reason" id="decline-office-reason-{{ trans.office_cashbook_id }}" value="">
+                        <button type="button" class="btn btn-danger decline-office-cheque-btn" data-form-id="decline-office-form-{{ trans.office_cashbook_id }}" data-reason-id="decline-office-reason-{{ trans.office_cashbook_id }}" style="padding: 5px 10px; font-size: 12px;">Decline</button>
+                    </form>
+                    {% endif %}
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if transactions|length == 0 %}
+            <tr>
+                <td colspan="10" style="text-align: center; color: #999;">No office transactions found. Add income or transfer fees from Client Ledger.</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Decline Office Cheque Modal (Reason Required) -->
+<div id="decline-office-cheque-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-box" style="max-width: 450px;">
+        <h3 style="margin-bottom: 15px;">Decline Office Cheque</h3>
+        <p class="modal-message" style="margin-bottom: 15px;">Reason for declining is <strong>mandatory</strong>.</p>
+        <div class="form-group" style="margin-bottom: 15px;">
+            <label>Reason</label>
+            <select id="decline-office-reason-select" required style="width: 100%; padding: 8px;">
+                <option value="">-- Select reason --</option>
+                <option value="Insufficient funds">Insufficient funds</option>
+                <option value="Cheque bounced">Cheque bounced</option>
+                <option value="Bank rejection">Bank rejection</option>
+                <option value="Duplicate transaction">Duplicate transaction</option>
+                <option value="Cancelled">Cancelled</option>
+                <option value="Other">Other</option>
+            </select>
+        </div>
+        <div class="form-group" id="decline-office-other-wrap" style="display: none; margin-bottom: 15px;">
+            <label>Please specify</label>
+            <input type="text" id="decline-office-other-text" placeholder="Enter reason..." maxlength="200" style="width: 100%; padding: 8px;">
+        </div>
+        <div class="modal-actions">
+            <button type="button" id="decline-office-modal-yes" class="btn btn-danger">Confirm Decline</button>
+            <button type="button" id="decline-office-modal-no" class="btn btn-secondary">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- Clear Office Cheque Confirmation Modal -->
+<div id="clear-office-cheque-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-box">
+        <h3 style="margin-bottom: 15px;">Clear Office Cheque</h3>
+        <p class="modal-message">Are you sure you want to clear this cheque?</p>
+        <div style="background: #e7f3ff; padding: 12px; border-radius: 5px; margin-bottom: 15px; font-size: 14px;">
+            <strong>This action will:</strong>
+            <ul style="margin: 8px 0 0 20px; padding: 0;">
+                <li>Update Office Account balance</li>
+                <li>Include cheque in income/expense totals</li>
+                <li>Record this action in the Audit Log</li>
+            </ul>
+        </div>
+        <div class="modal-actions">
+            <button type="button" id="clear-office-modal-yes" class="btn btn-success">Yes — Clear Cheque</button>
+            <button type="button" id="clear-office-modal-no" class="btn btn-secondary">No — Cancel</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+.modal-box {
+    background: white;
+    padding: 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    max-width: 400px;
+}
+.modal-message { font-size: 16px; margin-bottom: 20px; }
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; }
+</style>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+    // Decline Office Cheque Modal
+    var declineModal = document.getElementById('decline-office-cheque-modal');
+    var declineBtnYes = document.getElementById('decline-office-modal-yes');
+    var declineBtnNo = document.getElementById('decline-office-modal-no');
+    var declineFormToSubmit = null;
+
+    var reasonSelect = document.getElementById('decline-office-reason-select');
+    var otherWrap = document.getElementById('decline-office-other-wrap');
+    var otherText = document.getElementById('decline-office-other-text');
+    var reasonInput = null;
+
+    if (reasonSelect) {
+        reasonSelect.addEventListener('change', function() {
+            otherWrap.style.display = (this.value === 'Other') ? 'block' : 'none';
+        });
+    }
+
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.decline-office-cheque-btn');
+        if (btn) {
+            e.preventDefault();
+            declineFormToSubmit = document.getElementById(btn.getAttribute('data-form-id'));
+            reasonInput = document.getElementById(btn.getAttribute('data-reason-id'));
+            if (declineFormToSubmit) {
+                reasonSelect.value = '';
+                otherText.value = '';
+                otherWrap.style.display = 'none';
+                declineModal.style.display = 'flex';
+            }
+        }
+    });
+
+    declineBtnNo.onclick = function() {
+        declineModal.style.display = 'none';
+        declineFormToSubmit = null;
+        reasonInput = null;
+    };
+
+    declineBtnYes.onclick = function() {
+        var reason = reasonSelect.value;
+        if (reason === 'Other') {
+            reason = (otherText.value || '').trim();
+            if (!reason) {
+                alert('Please enter a reason when selecting Other.');
+                return;
+            }
+        } else if (!reason) {
+            alert('Please select a decline reason.');
+            return;
+        }
+        if (declineFormToSubmit && reasonInput) {
+            reasonInput.value = reason;
+            declineFormToSubmit.submit();
+        }
+        declineModal.style.display = 'none';
+        declineFormToSubmit = null;
+        reasonInput = null;
+    };
+
+    declineModal.onclick = function(e) {
+        if (e.target === declineModal) {
+            declineModal.style.display = 'none';
+            declineFormToSubmit = null;
+        }
+    };
+
+    // Clear Office Cheque Modal
+    var clearModal = document.getElementById('clear-office-cheque-modal');
+    var clearBtnYes = document.getElementById('clear-office-modal-yes');
+    var clearBtnNo = document.getElementById('clear-office-modal-no');
+    var clearFormToSubmit = null;
+
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.clear-office-cheque-btn');
+        if (btn) {
+            e.preventDefault();
+            clearFormToSubmit = document.getElementById(btn.getAttribute('data-form-id'));
+            if (clearFormToSubmit) {
+                clearModal.style.display = 'flex';
+            }
+        }
+    });
+
+    clearBtnNo.onclick = function() {
+        clearModal.style.display = 'none';
+        clearFormToSubmit = null;
+    };
+
+    clearBtnYes.onclick = function() {
+        if (clearFormToSubmit) {
+            clearFormToSubmit.submit();
+        }
+        clearModal.style.display = 'none';
+        clearFormToSubmit = null;
+    };
+
+    clearModal.onclick = function(e) {
+        if (e.target === clearModal) {
+            clearModal.style.display = 'none';
+            clearFormToSubmit = null;
+        }
+    };
+})();
+</script>
+{% endblock %}

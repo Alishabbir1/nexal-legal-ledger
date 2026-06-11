@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block page_title %}Override Transaction Impact{% endblock %}
+
+{% block content %}
+{% set amount = impact.amount | float %}
+{% set pre_client = impact.pre_client_balance | float %}
+{% set post_client = impact.post_client_balance | float %}
+{% set pre_total = impact.pre_total_cashbook | float %}
+{% set post_total = impact.post_total_cashbook | float %}
+{% set has_deficit = impact.client_deficit is not none %}
+
+<div style="max-width: 820px;">
+
+    <!-- Header -->
+    <div style="margin-bottom: 24px; display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div>
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                <div style="width: 36px; height: 36px; border-radius: 8px; background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.4); display: flex; align-items: center; justify-content: center; color: var(--warning);">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </div>
+                <div>
+                    <h2 style="font-size: 1.15rem; font-weight: 600; color: var(--text-primary); margin: 0;">Override Transaction Impact Summary</h2>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">{{ impact.transaction_at }}</div>
+                </div>
+            </div>
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <a href="{{ url_for('cashbook') }}" class="btn btn-sm">Return to Cashbook</a>
+            <a href="{{ url_for('new_transaction') }}" class="btn btn-sm btn-primary">New Transaction</a>
+        </div>
+    </div>
+
+    <!-- Override Used Badge + Deficit Alert -->
+    {% if impact.override_used %}
+    <div class="impact-override-used-badge" style="margin-bottom: 14px;">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        </svg>
+        Override access used — client ledger balance was insufficient; full cashbook reserve was accessed
+    </div>
+    {% endif %}
+
+    {% if has_deficit %}
+    <div class="impact-deficit-alert">
+        <div class="impact-deficit-alert-title">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
+                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            Temporary Client Ledger Deficit Created
+        </div>
+        <div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 4px;">
+            Client <strong>{{ impact.client_name }}</strong> now has a ledger deficit of
+            <strong style="color: var(--danger); font-family: var(--font-mono);">£{{ '{:,.2f}'.format(impact.client_deficit | float | abs) }}</strong>.
+            This is expected under override mode. Ensure the deficit is resolved before disabling override or closing the matter.
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Transaction Summary -->
+    <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+            <span class="card-title">Transaction Details</span>
+        </div>
+        <div class="card-body" style="padding: 0;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.84rem;">
+                <tbody>
+                    <tr style="border-bottom: 1px solid var(--border-subtle);">
+                        <td style="padding: 12px 20px; color: var(--text-muted); width: 38%;">Transaction Type</td>
+                        <td style="padding: 12px 20px; font-weight: 600; color: var(--text-primary);">{{ impact.txn_type }}</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid var(--border-subtle);">
+                        <td style="padding: 12px 20px; color: var(--text-muted);">Amount</td>
+                        <td style="padding: 12px 20px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); font-size: 1rem;">
+                            £{{ '{:,.2f}'.format(amount) }}
+                        </td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid var(--border-subtle);">
+                        <td style="padding: 12px 20px; color: var(--text-muted);">Reference</td>
+                        <td style="padding: 12px 20px; font-family: var(--font-mono); color: var(--text-primary);">{{ impact.reference }}</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid var(--border-subtle);">
+                        <td style="padding: 12px 20px; color: var(--text-muted);">Source</td>
+                        <td style="padding: 12px 20px; color: var(--text-primary);">{{ impact.source }}</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid var(--border-subtle);">
+                        <td style="padding: 12px 20px; color: var(--text-muted);">Client / Matter</td>
+                        <td style="padding: 12px 20px; color: var(--text-primary);">
+                            {{ impact.client_name or '—' }}
+                            {% if impact.matter_ref %}<span style="color: var(--text-muted); font-size: 0.78rem; margin-left: 6px;">({{ impact.matter_ref }})</span>{% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px 20px; color: var(--text-muted);">Ledger Record ID</td>
+                        <td style="padding: 12px 20px; font-family: var(--font-mono); color: var(--text-muted); font-size: 0.78rem;">{{ impact.ledger_id }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Balance Impact -->
+    <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+            <span class="card-title">Balance Impact</span>
+        </div>
+        <div class="card-body">
+
+            <!-- Client Ledger Balance -->
+            <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 8px;">Client Ledger Balance — {{ impact.client_name or 'Selected Client' }}</div>
+            <div class="impact-balance-row" style="margin-bottom: 20px;">
+                <div class="impact-balance-cell">
+                    <div class="impact-balance-label">Before</div>
+                    <div class="impact-balance-value {% if pre_client >= 0 %}positive{% else %}negative{% endif %}">
+                        {% if pre_client < 0 %}−{% endif %}£{{ '{:,.2f}'.format(pre_client | abs) }}
+                    </div>
+                </div>
+                <div class="impact-balance-cell" style="background: rgba(255,255,255,0.02);">
+                    <div class="impact-balance-label">Movement</div>
+                    <div class="impact-balance-value {% if impact.txn_type in ('Receipt',) %}positive{% else %}negative{% endif %}">
+                        {% if impact.txn_type in ('Payment', 'Transfer') %}−{% else %}+{% endif %}£{{ '{:,.2f}'.format(amount) }}
+                    </div>
+                </div>
+                <div class="impact-balance-cell">
+                    <div class="impact-balance-label">After</div>
+                    <div class="impact-balance-value {% if post_client >= 0 %}positive{% else %}negative{% endif %}">
+                        {% if post_client < 0 %}−{% endif %}£{{ '{:,.2f}'.format(post_client | abs) }}
+                        {% if post_client < 0 %}
+                        <span style="font-size: 0.68rem; color: var(--danger); font-family: var(--font-sans); font-weight: 700; display: block; margin-top: 2px; letter-spacing: 0.05em; text-transform: uppercase;">DEFICIT</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Total Cashbook Balance -->
+            <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 8px;">Total Client Cashbook Balance (All Matters)</div>
+            <div class="impact-balance-row">
+                <div class="impact-balance-cell">
+                    <div class="impact-balance-label">Before</div>
+                    <div class="impact-balance-value positive">£{{ '{:,.2f}'.format(pre_total) }}</div>
+                </div>
+                <div class="impact-balance-cell" style="background: rgba(255,255,255,0.02);">
+                    <div class="impact-balance-label">Movement</div>
+                    <div class="impact-balance-value {% if impact.txn_type in ('Payment', 'Transfer') %}negative{% else %}positive{% endif %}">
+                        {% if impact.txn_type in ('Payment', 'Transfer') %}−{% else %}+{% endif %}£{{ '{:,.2f}'.format(amount) }}
+                    </div>
+                </div>
+                <div class="impact-balance-cell">
+                    <div class="impact-balance-label">After</div>
+                    <div class="impact-balance-value {% if post_total >= 0 %}positive{% else %}negative{% endif %}">
+                        {% if post_total < 0 %}−{% endif %}£{{ '{:,.2f}'.format(post_total | abs) }}
+                    </div>
+                </div>
+            </div>
+
+            {% if post_total >= 0 %}
+            <div style="margin-top: 12px; font-size: 0.8rem; color: var(--success); display: flex; align-items: center; gap: 6px;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                Total cashbook remains positive — safeguard maintained
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Override Context & Risk State -->
+    <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+            <span class="card-title">Override Context &amp; Risk State</span>
+        </div>
+        <div class="card-body">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                <div>
+                    <div style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 4px;">Override Used</div>
+                    <div style="font-weight: 600; font-size: 0.88rem;">
+                        {% if impact.override_used %}
+                        <span style="color: var(--warning);">Yes — client balance was insufficient</span>
+                        {% else %}
+                        <span style="color: var(--text-secondary);">No — client balance was sufficient</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div>
+                    <div style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 4px;">Risk State</div>
+                    <div style="font-weight: 600; font-size: 0.88rem;">
+                        {% if has_deficit %}
+                        <span style="color: var(--danger);">Temporary deficit — attention required</span>
+                        {% else %}
+                        <span style="color: var(--success);">No deficit — normal balance maintained</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div>
+                    <div style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 4px;">Override Reason</div>
+                    <div style="font-weight: 500; color: var(--text-primary); font-size: 0.85rem;">{{ impact.override_reason or '—' }}</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 4px;">Override Enabled By</div>
+                    <div style="font-weight: 500; color: var(--text-primary); font-size: 0.85rem;">{{ impact.override_by or '—' }} at {{ impact.override_at or '—' }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Audit Confirmation -->
+    <div class="impact-audit-confirm" style="margin-bottom: 24px; display: flex; align-items: flex-start; gap: 12px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;margin-top:2px;color:var(--success);">
+            <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        <div>
+            <strong style="color: var(--success);">Audit log entry recorded.</strong>
+            This transaction has been immutably logged including: transaction amount, client balances before and after,
+            total cashbook before and after, override reason, and the identity of the user who enabled override mode.
+            This record cannot be altered or deleted.
+        </div>
+    </div>
+
+    <!-- Actions -->
+    <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+        <a href="{{ url_for('cashbook') }}" class="btn btn-primary">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+            </svg>
+            View Cashbook
+        </a>
+        <a href="{{ url_for('client_ledger') }}{% if impact.client_id %}?client_id={{ impact.client_id }}{% endif %}" class="btn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            View Client Ledger
+        </a>
+        <a href="{{ url_for('new_transaction') }}" class="btn">New Transaction</a>
+        <a href="{{ url_for('override_mode') }}" class="btn" style="border-color: rgba(251,191,36,0.4); color: var(--warning);">Override Management</a>
+        <a href="{{ url_for('audit_log') }}" class="btn">View Audit Log</a>
+    </div>
+
+</div>
+{% endblock %}

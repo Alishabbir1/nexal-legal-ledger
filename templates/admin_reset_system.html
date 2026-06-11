@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block page_title %}Full System Reset{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Full System Reset</h2>
+
+    <div class="alert alert-error" style="margin-bottom:20px;">
+        <strong>CRITICAL — IRREVERSIBLE ACTION</strong><br>
+        This will permanently delete <strong>all</strong> system financial data: transactions, client ledger,
+        client cashbook, office account activity, reconciliations, month locks, password reset tokens, and audit logs.
+        User accounts are <strong>not</strong> removed.
+    </div>
+
+    <ul style="margin:0 0 20px; padding-left:20px; color:var(--text-secondary); font-size:13.5px; line-height:1.8;">
+        <li>Requires environment variable <code>ALLOW_FULL_SYSTEM_RESET=true</code>.</li>
+        <li>Blocked if <code>SOLICITOR_NO_RESET</code> is set.</li>
+        <li>Optional: delete all clients and matters, or keep them (balances become £0.00 with no transactions).</li>
+        <li>Optional default for "delete clients" from <code>RESET_DELETE_CLIENTS=true</code> or <code>false</code>.</li>
+    </ul>
+
+    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:24px; font-size:13.5px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="color:var(--text-muted);">Full reset allowed:</span>
+            {% if allow_full_reset %}
+            <span class="status-badge status-open">Yes</span>
+            {% else %}
+            <span class="status-badge status-declined">No — set ALLOW_FULL_SYSTEM_RESET=true</span>
+            {% endif %}
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="color:var(--text-muted);">SOLICITOR_NO_RESET blocks reset:</span>
+            <span class="status-badge {% if blocked_by_no_reset %}status-declined{% else %}status-open{% endif %}">{{ 'Yes' if blocked_by_no_reset else 'No' }}</span>
+        </div>
+    </div>
+
+    <div style="display:flex; gap:10px;">
+        <button type="button" class="btn btn-danger-solid" id="openFullResetModal"
+                {% if not allow_full_reset or blocked_by_no_reset %}disabled{% endif %}>
+            ⚠ FULL SYSTEM RESET…
+        </button>
+        <a href="{{ url_for('system_health') }}" class="btn btn-secondary">Back to System Health</a>
+    </div>
+</div>
+
+<!-- Dark modal overlay -->
+<div id="fullResetModal" style="display:none; position:fixed; inset:0; z-index:9000; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px);">
+    <div style="background:var(--bg-surface); border:1px solid var(--border-default); border-radius:12px; padding:28px 30px; max-width:520px; width:92%; box-shadow:0 24px 64px rgba(0,0,0,0.6);">
+        <h3 style="margin:0 0 10px; font-size:16px; color:var(--text-primary);">Confirm Full System Reset</h3>
+        <p style="color:var(--text-secondary); font-size:13.5px; margin-bottom:6px;">This action <strong>cannot</strong> be undone.</p>
+        <p style="color:var(--text-secondary); font-size:13.5px; margin-bottom:18px;">
+            Type <strong style="color:var(--danger);">RESET SYSTEM</strong> to enable the confirm button.
+        </p>
+        <form method="POST" action="{{ url_for('admin_reset_system') }}" id="fullResetForm">
+            <div class="form-group" style="margin-bottom:16px;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:var(--text-secondary);">
+                    <input type="checkbox" name="delete_clients" value="on" {% if default_delete_clients %}checked{% endif %} style="width:auto;">
+                    Delete all clients and matters
+                    <small style="color:var(--text-muted);">(uncheck to keep client list with £0.00 balances)</small>
+                </label>
+            </div>
+            <div class="form-group">
+                <label>Confirmation phrase</label>
+                <input type="text" name="confirm_phrase" id="confirm_phrase_full" autocomplete="off"
+                       placeholder="Type RESET SYSTEM">
+            </div>
+            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
+                <button type="button" class="btn btn-secondary" id="closeFullResetModal">Cancel</button>
+                <button type="submit" class="btn btn-danger-solid" id="submitFullReset" disabled>Execute Full Reset</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+(function() {
+    var modal     = document.getElementById('fullResetModal');
+    var phrase    = document.getElementById('confirm_phrase_full');
+    var submitBtn = document.getElementById('submitFullReset');
+    var openBtn   = document.getElementById('openFullResetModal');
+
+    function syncSubmit() { submitBtn.disabled = (phrase.value !== 'RESET SYSTEM'); }
+    phrase.addEventListener('input', syncSubmit);
+
+    if (openBtn && !openBtn.disabled) {
+        openBtn.addEventListener('click', function() {
+            modal.style.display = 'flex';
+            phrase.value = '';
+            syncSubmit();
+            phrase.focus();
+        });
+    }
+    document.getElementById('closeFullResetModal').addEventListener('click', function() { modal.style.display = 'none'; });
+    modal.addEventListener('click', function(e) { if (e.target === modal) modal.style.display = 'none'; });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') modal.style.display = 'none'; });
+})();
+</script>
+{% endblock %}

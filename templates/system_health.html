@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>System Health</h2>
+    <p style="margin: 20px 0; color: #666;">
+        Database and system status overview.
+    </p>
+
+    <div style="display: grid; gap: 10px; margin: 20px 0;">
+        <div class="stat-card" style="display: flex; align-items: baseline; gap: 10px;">
+            <span class="stat-label" style="margin: 0; min-width: 180px;">Last Nightly Backup</span>
+            <span>{{ last_backup.strftime('%Y-%m-%d %H:%M') if last_backup else 'Never' }}</span>
+        </div>
+        <div class="stat-card" style="display: flex; align-items: baseline; gap: 10px;">
+            <span class="stat-label" style="margin: 0; min-width: 180px;">Last USB Backup</span>
+            <span>{{ last_usb_date }}</span>
+        </div>
+        <div class="stat-card" style="display: flex; align-items: baseline; gap: 10px;">
+            <span class="stat-label" style="margin: 0; min-width: 180px;">Last Reconciliation</span>
+            <span>{{ last_reconciliation }}</span>
+        </div>
+        <div class="stat-card" style="border-color: {% if integrity_ok %}rgba(34,211,165,0.3){% else %}rgba(248,113,113,0.3){% endif %}; display: flex; align-items: baseline; gap: 10px;">
+            <span class="stat-label" style="margin: 0; min-width: 180px;">Database Integrity</span>
+            <span class="{% if integrity_ok %}text-success{% else %}text-danger{% endif %}">
+                {{ 'OK' if integrity_ok else 'ISSUE' }} — {{ integrity_msg }}
+            </span>
+        </div>
+        <div class="stat-card" style="border-color: {% if consistency_ok %}rgba(34,211,165,0.3){% else %}rgba(248,113,113,0.3){% endif %}; display: flex; align-items: flex-start; gap: 10px;">
+            <span class="stat-label" style="margin: 0; min-width: 180px; flex-shrink: 0;">Ledger Consistency</span>
+            <span class="{% if consistency_ok %}text-success{% else %}text-danger{% endif %}">
+                {{ 'OK' if consistency_ok else 'Mismatch detected' }}
+                {% if consistency_error %}<br><small>{{ consistency_error }}</small>{% endif %}
+            </span>
+        </div>
+        <div class="stat-card" style="display: flex; align-items: baseline; gap: 10px;">
+            <span class="stat-label" style="margin: 0; min-width: 180px;">Local Backup Folder</span>
+            <code>{{ local_backup_dir }}</code>
+        </div>
+        <div class="stat-card" style="display: flex; align-items: baseline; gap: 10px;">
+            <span class="stat-label" style="margin: 0; min-width: 180px;">OneDrive Backup</span>
+            <span>{{ onedrive_dir }}</span>
+        </div>
+        <div class="alert alert-warning" style="margin: 0;">
+            <strong>Corrupted period reset:</strong>&ensp;
+            <a href="{{ url_for('admin_reset_january') }}" style="color: var(--warning); text-decoration: underline;">Reset January 2026 (admin, destructive)</a>
+        </div>
+        <div class="alert alert-error" style="margin: 0;">
+            <strong>Complete wipe:</strong>&ensp;
+            <a href="{{ url_for('admin_reset_system') }}" style="color: var(--danger); text-decoration: underline;">Full system reset (admin, destroys all data)</a>
+        </div>
+        <div style="padding: 14px 16px; background: rgba(180,0,0,0.18); border: 1px solid rgba(248,113,113,0.45); border-radius: var(--r-md);">
+            <strong style="color: var(--danger);">FULL SYSTEM RESET (DANGER):</strong>
+            <form method="POST" action="{{ url_for('admin_reset_all') }}" style="margin-top: 10px;">
+                <button type="submit" class="btn btn-danger"
+                        style="font-weight: 700;"
+                        onclick="return confirm('WARNING: This will DELETE ALL DATA and cannot be undone. Continue?')">
+                    FULL SYSTEM RESET (DANGER)
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,922 @@
+{% extends "base.html" %}
+
+{% block page_title %}Client Money Reconciliation{% endblock %}
+
+{% block content %}
+
+<!-- Page header + new reconciliation -->
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
+        <div>
+            <h2 style="margin:0 0 6px;">Client Money Reconciliation</h2>
+            <p style="margin:0; color:var(--text-secondary); font-size:13.5px;">
+                SRA Accounts Rules require monthly reconciliation of <strong>client money only</strong>.
+                This compares client ledger balances, client cashbook transactions, and client bank account balance.
+                <br><small style="color:var(--text-muted);">Office account balances are excluded and reported separately.</small>
+            </p>
+        </div>
+        <a href="{{ url_for('new_reconciliation') }}" class="btn" style="white-space:nowrap;">+ New Reconciliation</a>
+    </div>
+</div>
+
+{% set month_names = ['','January','February','March','April','May','June','July','August','September','October','November','December'] %}
+
+<!-- ── Current Reconciliation (operational) ─────────────────────────────── -->
+{% if current_reconciliations %}
+<div class="card" style="margin-top:20px;">
+    <h3 style="margin:0 0 14px;">Current Reconciliation</h3>
+    <p style="margin:0 0 16px; color:var(--text-secondary); font-size:13.5px;">
+        Active month-end reconciliations. Unlock to correct transactions; lock again to finalise.
+        A new version is created only if figures change.
+    </p>
+    <div style="overflow-x:auto;">
+        <table class="archive-month-table">
+            <thead>
+                <tr>
+                    <th>Period</th>
+                    <th>Date</th>
+                    <th style="text-align:right;">Client Ledger</th>
+                    <th style="text-align:right;">Cashbook</th>
+                    <th style="text-align:right;">Bank Balance</th>
+                    <th style="text-align:right;">Variance</th>
+                    <th style="text-align:center;">Status</th>
+                    <th style="text-align:center;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rec in current_reconciliations %}
+                {% set var_abs = rec.variance | float | abs %}
+                <tr class="recon-history-row"
+                    data-rec-id="{{ rec.id }}"
+                    data-month="{{ rec.reconciliation_month }}"
+                    data-year="{{ rec.reconciliation_year }}"
+                    data-date="{{ rec.reconciliation_date }}"
+                    data-ledger="{{ rec.ledger_total }}"
+                    data-cashbook="{{ rec.cashbook_total }}"
+                    data-bank="{{ rec.bank_balance }}"
+                    data-variance="{{ rec.variance }}"
+                    data-locked="{{ rec.locked or 0 }}"
+                    data-locked-by="{{ rec.locked_by_user or '' }}"
+                    data-locked-ts="{{ rec.locked_timestamp or '' }}"
+                    data-created="{{ rec.created_date or '' }}"
+                    data-reconciled-by="{{ rec.reconciled_by or '' }}"
+                    data-notes="{{ rec.notes or '' }}"
+                    data-version="{{ rec.version or 1 }}"
+                    data-is-current="1">
+                    <td style="font-weight:700; color:var(--text-primary);">
+                        {{ month_names[rec.reconciliation_month] }} {{ rec.reconciliation_year }}
+                        <span style="font-weight:500; color:var(--text-muted); font-size:12px;">v{{ rec.version or 1 }}</span>
+                    </td>
+                    <td style="font-family:var(--font-mono); color:var(--text-secondary); font-size:13px;">
+                        {{ rec.reconciliation_date }}
+                    </td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ "%.2f"|format(rec.ledger_total|float) }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ "%.2f"|format(rec.cashbook_total|float) }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ "%.2f"|format(rec.bank_balance|float) }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">
+                        {% if var_abs < 0.005 %}<span class="recon-match">£0.00</span>
+                        {% else %}<span class="recon-miss">£{{ "%.2f"|format(var_abs) }}</span>{% endif %}
+                    </td>
+                    <td style="text-align:center;">
+                        {% if rec.locked %}
+                        <span class="status-badge status-cleared" style="font-size:11px;">Current</span>
+                        {% else %}
+                        <span class="status-badge status-open" style="font-size:11px;">Live</span>
+                        {% endif %}
+                    </td>
+                    <td style="text-align:center;">
+                        <button class="btn btn-secondary btn-sm view-recon-btn" type="button"
+                                data-rec-id="{{ rec.id }}" style="padding:4px 14px;">View</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- ── Reconciliation History (all versions) ───────────────────────────── -->
+{% if past_reconciliations %}
+
+{# Build year groups in Jinja – collect unique years in order #}
+{% set ns = namespace(years=[]) %}
+{% for rec in past_reconciliations %}
+    {% if rec.reconciliation_year not in ns.years %}
+        {% set ns.years = ns.years + [rec.reconciliation_year] %}
+    {% endif %}
+{% endfor %}
+
+<div class="card" style="margin-top:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
+        <h3 style="margin:0;">Reconciliation History</h3>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <span style="font-size:12px; color:var(--text-muted);">{{ past_reconciliations|length }} version{{ 's' if past_reconciliations|length != 1 }}</span>
+            <button type="button" class="btn btn-secondary btn-sm" id="archive-expand-all" style="padding:4px 12px; font-size:12px;">Expand All</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="archive-collapse-all" style="padding:4px 12px; font-size:12px;">Collapse All</button>
+        </div>
+    </div>
+
+    <div class="archive-year-list">
+        {% for year in ns.years %}
+        {% set year_recs = past_reconciliations | selectattr('reconciliation_year', 'equalto', year) | list %}
+        {% set all_zero = year_recs | map(attribute='variance') | map('float') | map('abs') | select('gt', 0.005) | list | length == 0 %}
+        {% set has_locked = year_recs | selectattr('locked') | list | length > 0 %}
+
+        <div class="archive-year-block" data-year="{{ year }}">
+
+            <!-- Year header row (click to toggle) -->
+            <button type="button" class="archive-year-toggle {% if loop.first %}open{% endif %}"
+                    aria-expanded="{{ 'true' if loop.first else 'false' }}"
+                    data-target="archive-year-{{ year }}">
+                <div class="archive-year-left">
+                    <span class="archive-chevron">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </span>
+                    <span class="archive-year-label">{{ year }}</span>
+                    <span class="archive-year-count">{{ year_recs|length }} version{{ 's' if year_recs|length != 1 }}</span>
+                </div>
+                <div class="archive-year-right">
+                    {% if all_zero %}
+                    <span class="archive-year-pill pill-ok">All Balanced</span>
+                    {% else %}
+                    <span class="archive-year-pill pill-warn">Variance Present</span>
+                    {% endif %}
+                    {% if has_locked %}
+                    <span class="archive-year-pill pill-locked">Locked Records</span>
+                    {% endif %}
+                </div>
+            </button>
+
+            <!-- Expandable month table -->
+            <div class="archive-year-body {% if loop.first %}expanded{% endif %}" id="archive-year-{{ year }}">
+                <div style="overflow-x:auto;">
+                    <table class="archive-month-table">
+                        <thead>
+                            <tr>
+                                <th>Period</th>
+                                <th>Ver.</th>
+                                <th>Date</th>
+                                <th style="text-align:right;">Client Ledger</th>
+                                <th style="text-align:right;">Cashbook Total</th>
+                                <th style="text-align:right;">Bank Balance</th>
+                                <th style="text-align:right;">Variance</th>
+                                <th style="text-align:center;">Status</th>
+                                <th style="text-align:center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for rec in year_recs %}
+                            {% set var_abs = rec.variance | float | abs %}
+                            <tr class="recon-history-row"
+                                data-rec-id="{{ rec.id }}"
+                                data-month="{{ rec.reconciliation_month }}"
+                                data-year="{{ rec.reconciliation_year }}"
+                                data-date="{{ rec.reconciliation_date }}"
+                                data-ledger="{{ rec.ledger_total }}"
+                                data-cashbook="{{ rec.cashbook_total }}"
+                                data-bank="{{ rec.bank_balance }}"
+                                data-variance="{{ rec.variance }}"
+                                data-locked="{{ rec.locked or 0 }}"
+                                data-locked-by="{{ rec.locked_by_user or '' }}"
+                                data-locked-ts="{{ rec.locked_timestamp or '' }}"
+                                data-created="{{ rec.created_date or '' }}"
+                                data-reconciled-by="{{ rec.reconciled_by or '' }}"
+                                data-notes="{{ rec.notes or '' }}"
+                                data-version="{{ rec.version or 1 }}"
+                                data-is-current="{{ rec.is_current or 0 }}">
+                                <td style="font-weight:600; color:var(--text-primary);">
+                                    {{ month_names[rec.reconciliation_month] }} {{ rec.reconciliation_year }}
+                                </td>
+                                <td style="font-family:var(--font-mono); color:var(--text-secondary); text-align:center;">
+                                    v{{ rec.version or 1 }}
+                                </td>
+                                <td style="font-family:var(--font-mono); color:var(--text-secondary);">
+                                    {{ rec.reconciliation_date }}
+                                </td>
+                                <td style="text-align:right; font-family:var(--font-mono); color:var(--text-primary);">
+                                    £{{ "%.2f"|format(rec.ledger_total|float) }}
+                                </td>
+                                <td style="text-align:right; font-family:var(--font-mono); color:var(--text-primary);">
+                                    £{{ "%.2f"|format(rec.cashbook_total|float) }}
+                                </td>
+                                <td style="text-align:right; font-family:var(--font-mono); color:var(--text-primary);">
+                                    £{{ "%.2f"|format(rec.bank_balance|float) }}
+                                </td>
+                                <td style="text-align:right; font-family:var(--font-mono);">
+                                    {% if var_abs < 0.005 %}
+                                    <span class="recon-match">£0.00</span>
+                                    {% else %}
+                                    <span class="recon-miss">£{{ "%.2f"|format(var_abs) }}</span>
+                                    {% endif %}
+                                </td>
+                                <td style="text-align:center;">
+                                    {% if rec.is_current and rec.locked %}
+                                    <span class="status-badge status-cleared" style="font-size:11px;">Current</span>
+                                    {% elif rec.is_current and not rec.locked %}
+                                    <span class="status-badge status-open" style="font-size:11px;">Live</span>
+                                    {% else %}
+                                    <span class="status-badge status-pending" style="font-size:11px;">Archived</span>
+                                    {% endif %}
+                                </td>
+                                <td style="text-align:center;">
+                                    <button class="btn btn-secondary btn-sm view-recon-btn" type="button"
+                                            data-rec-id="{{ rec.id }}"
+                                            style="padding:4px 14px;">View</button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div><!-- /archive-year-block -->
+        {% endfor %}
+    </div><!-- /archive-year-list -->
+</div>
+{% endif %}
+
+{% if current_role == 'admin' %}
+<div class="card" style="margin-top:20px;">
+    <h3>Lock Reconciliation</h3>
+    <p style="margin:10px 0; color:var(--text-secondary);">
+        Locks the month using live month-end figures. After an unlock, relocking keeps the same
+        version if figures are unchanged; a new version is created only when values change. Admin only.
+    </p>
+    <form method="POST" action="{{ url_for('lock_month') }}" style="display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+        <div class="form-group" style="margin:0;">
+            <label>Month</label>
+            <select name="lock_month" required>
+                {% for m in range(1, 13) %}
+                <option value="{{ m }}">{{ m }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group" style="margin:0;">
+            <label>Year</label>
+            <input type="number" name="lock_year" min="2020" max="2030" value="{{ current_year }}" required>
+        </div>
+        <button type="submit" class="btn">Lock Month</button>
+    </form>
+</div>
+
+<div class="card" style="margin-top:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:4px;">
+        <div>
+            <h3 style="margin:0 0 4px;">Lock / Unlock Management</h3>
+            <p style="margin:0; color:var(--text-secondary); font-size:13px;">Admin only. Unlocking re-enables editing for that period. Staff cannot unlock.</p>
+        </div>
+    </div>
+
+    {% if locked_months %}
+    {# Build unique years from locked_months (already ordered DESC) #}
+    {% set ulns = namespace(years=[]) %}
+    {% for lm in locked_months %}
+        {% if lm.lock_year not in ulns.years %}
+            {% set ulns.years = ulns.years + [lm.lock_year] %}
+        {% endif %}
+    {% endfor %}
+
+    {% set month_names = ['','January','February','March','April','May','June','July','August','September','October','November','December'] %}
+
+    <div class="archive-year-list" style="margin-top:16px;">
+        {% for year in ulns.years %}
+        {% set yr_months = locked_months | selectattr('lock_year','equalto',year) | list %}
+        {% set locked_count   = yr_months | selectattr('locked') | list | length %}
+        {% set unlocked_count = yr_months | rejectattr('locked') | list | length %}
+
+        <div class="archive-year-block" data-year="unlock-{{ year }}">
+
+            <button type="button"
+                    class="archive-year-toggle {% if loop.first %}open{% endif %}"
+                    aria-expanded="{{ 'true' if loop.first else 'false' }}"
+                    data-target="unlock-year-{{ year }}">
+                <div class="archive-year-left">
+                    <span class="archive-chevron">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </span>
+                    <span class="archive-year-label">{{ year }}</span>
+                    <span class="archive-year-count">{{ yr_months|length }} period{{ 's' if yr_months|length != 1 }}</span>
+                </div>
+                <div class="archive-year-right">
+                    {% if locked_count %}
+                    <span class="archive-year-pill pill-locked">{{ locked_count }} Locked</span>
+                    {% endif %}
+                    {% if unlocked_count %}
+                    <span class="archive-year-pill" style="background:rgba(156,163,175,.1); color:var(--text-muted); border:1px solid var(--border-subtle);">{{ unlocked_count }} Unlocked</span>
+                    {% endif %}
+                </div>
+            </button>
+
+            <div class="archive-year-body {% if loop.first %}expanded{% endif %}" id="unlock-year-{{ year }}">
+                <div style="overflow-x:auto;">
+                    <table class="archive-month-table">
+                        <thead>
+                            <tr>
+                                <th>Month</th>
+                                <th style="text-align:center;">Status</th>
+                                <th>Locked By</th>
+                                <th>Locked At</th>
+                                <th>Unlock Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for lm in yr_months %}
+                            <tr>
+                                <td style="font-weight:600; color:var(--text-primary);">
+                                    {{ month_names[lm.lock_month] }} {{ lm.lock_year }}
+                                </td>
+                                <td style="text-align:center;">
+                                    <span class="status-badge {% if lm.locked %}status-cleared{% else %}status-pending{% endif %}" style="font-size:11px;">
+                                        {{ 'Locked' if lm.locked else 'Unlocked' }}
+                                    </span>
+                                </td>
+                                <td style="color:var(--text-secondary); font-size:13px;">{{ lm.locked_by or '—' }}</td>
+                                <td style="color:var(--text-muted); font-size:12px; font-family:var(--font-mono);">
+                                    {{ lm.locked_at[:16] if lm.locked_at else '—' }}
+                                </td>
+                                <td>
+                                    {% if lm.locked %}
+                                    <details class="unlock-details">
+                                        <summary class="unlock-summary">Unlock (with confirmation)</summary>
+                                        <form method="POST" action="{{ url_for('unlock_month') }}"
+                                              class="unlock-form"
+                                              onsubmit="return confirm('Are you sure you want to unlock this period? Editing will be re-enabled.');">
+                                            <input type="hidden" name="lock_month" value="{{ lm.lock_month }}">
+                                            <input type="hidden" name="lock_year" value="{{ lm.lock_year }}">
+                                            <div class="form-group" style="margin-bottom:10px;">
+                                                <label>Reason for unlock (optional)</label>
+                                                <input type="text" name="unlock_reason" placeholder="e.g. Correction required" style="width:100%;">
+                                            </div>
+                                            <button type="submit" class="btn btn-secondary" style="padding:6px 14px;">Confirm Unlock</button>
+                                        </form>
+                                    </details>
+                                    {% else %}
+                                    <span style="font-size:12px; color:var(--text-muted);">—</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div><!-- /archive-year-block -->
+        {% endfor %}
+    </div><!-- /archive-year-list -->
+
+    {% else %}
+    <p style="color:var(--text-muted); margin-top:16px; font-size:13.5px;">No lock records found. Use the Lock Reconciliation form above to lock a period.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+
+<!-- ── Reconciliation View Modal ──────────────────────────────────────── -->
+<div id="recon-view-overlay" class="recon-view-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="recon-modal-title">
+    <div class="recon-view-modal">
+        <!-- Modal header -->
+        <div class="recon-modal-header">
+            <div>
+                <div style="font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">
+                    Month-End Reconciliation Record
+                </div>
+                <h3 id="recon-modal-title" style="margin:0; font-size:18px; font-weight:700; color:var(--text-primary);"></h3>
+                <div id="recon-modal-meta" style="font-size:12px; color:var(--text-muted); margin-top:4px;"></div>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center; flex-shrink:0;">
+                <button id="recon-print-btn" class="btn" onclick="printReconModal()" type="button"
+                        style="display:flex; align-items:center; gap:6px; padding:7px 16px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="6 9 6 2 18 2 18 9"></polyline>
+                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+                        <rect x="6" y="14" width="12" height="8"></rect>
+                    </svg>
+                    Print Reconciliation
+                </button>
+                <button class="btn btn-secondary" onclick="closeReconModal()" type="button"
+                        style="padding:7px 14px;">Close</button>
+            </div>
+        </div>
+
+        <!-- Reconciliation summary values -->
+        <div class="recon-modal-grid">
+            <div class="recon-modal-stat">
+                <div class="recon-modal-stat-label">Client Ledger Total</div>
+                <div class="recon-modal-stat-value" id="rm-ledger"></div>
+            </div>
+            <div class="recon-modal-stat">
+                <div class="recon-modal-stat-label">Client Cashbook Total</div>
+                <div class="recon-modal-stat-value" id="rm-cashbook"></div>
+            </div>
+            <div class="recon-modal-stat">
+                <div class="recon-modal-stat-label">Client Bank Balance</div>
+                <div class="recon-modal-stat-value" id="rm-bank"></div>
+            </div>
+            <div class="recon-modal-stat">
+                <div class="recon-modal-stat-label">Variance</div>
+                <div class="recon-modal-stat-value" id="rm-variance"></div>
+            </div>
+        </div>
+
+        <!-- Confirmation table -->
+        <div class="recon-modal-table-wrap">
+            <table class="recon-modal-table">
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th style="text-align:right;">Value</th>
+                        <th>Confirmation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Client Ledger Total</td>
+                        <td style="text-align:right; font-family:var(--font-mono);" id="rmt-ledger">—</td>
+                        <td id="rmt-ledger-chk">—</td>
+                    </tr>
+                    <tr>
+                        <td>Client Cashbook Total</td>
+                        <td style="text-align:right; font-family:var(--font-mono);" id="rmt-cashbook">—</td>
+                        <td id="rmt-cashbook-chk">—</td>
+                    </tr>
+                    <tr>
+                        <td>Client Bank Balance</td>
+                        <td style="text-align:right; font-family:var(--font-mono);" id="rmt-bank">—</td>
+                        <td id="rmt-bank-chk">—</td>
+                    </tr>
+                    <tr style="font-weight:700;">
+                        <td>Variance (Ledger vs Bank)</td>
+                        <td style="text-align:right; font-family:var(--font-mono);" id="rmt-variance">—</td>
+                        <td id="rmt-variance-chk">—</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Footer audit row -->
+        <div class="recon-modal-footer">
+            <div>
+                <span style="color:var(--text-muted); font-size:12px;">Record ID: </span>
+                <span id="rm-id" style="font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);"></span>
+            </div>
+            <div>
+                <span style="color:var(--text-muted); font-size:12px;">Lock status: </span>
+                <span id="rm-lock-status" style="font-size:12px;"></span>
+            </div>
+            <div>
+                <span style="color:var(--text-muted); font-size:12px;">Version: </span>
+                <span id="rm-version" style="font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);"></span>
+            </div>
+            <div id="rm-notes-wrap" style="display:none;">
+                <span style="color:var(--text-muted); font-size:12px;">Notes: </span>
+                <span id="rm-notes" style="font-size:12px; color:var(--text-secondary);"></span>
+            </div>
+        </div>
+
+        <!-- Read-only notice -->
+        <p style="margin:14px 0 0; font-size:11.5px; color:var(--text-muted); text-align:center; border-top:1px solid var(--border-subtle); padding-top:12px;">
+            This is an immutable historical reconciliation record. No modifications are permitted after locking.
+        </p>
+    </div>
+</div>
+
+
+<style>
+/* ── Archive year-grouped accordion ────────────────────── */
+.archive-year-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.archive-year-block {
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.archive-year-toggle {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 13px 16px;
+    background: var(--bg-elevated);
+    border: none;
+    cursor: pointer;
+    gap: 12px;
+    transition: background .15s;
+    text-align: left;
+}
+.archive-year-toggle:hover { background: var(--bg-elevated-hover, color-mix(in srgb, var(--bg-elevated) 80%, white 20%)); }
+.archive-year-toggle.open   { background: var(--bg-surface); }
+.archive-year-left  { display: flex; align-items: center; gap: 10px; }
+.archive-year-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.archive-chevron {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-muted);
+    transition: transform .2s ease;
+    flex-shrink: 0;
+}
+.archive-year-toggle.open .archive-chevron { transform: rotate(0deg); }
+.archive-year-toggle:not(.open) .archive-chevron { transform: rotate(-90deg); }
+.archive-year-label {
+    font-size: 16px; font-weight: 700; color: var(--text-primary);
+    letter-spacing: .01em;
+}
+.archive-year-count {
+    font-size: 12px; color: var(--text-muted);
+    padding: 2px 8px; background: var(--bg-base);
+    border: 1px solid var(--border-subtle); border-radius: 10px;
+}
+.archive-year-pill {
+    font-size: 11px; font-weight: 500;
+    padding: 2px 9px; border-radius: 10px;
+}
+.pill-ok     { background: var(--success-dim); color: var(--success); border: 1px solid rgba(34,211,165,.2); }
+.pill-warn   { background: var(--warning-dim); color: var(--warning); border: 1px solid rgba(251,191,36,.2); }
+.pill-locked { background: rgba(99,102,241,.12); color: #818cf8; border: 1px solid rgba(99,102,241,.2); }
+
+.archive-year-body {
+    display: none;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-base);
+}
+.archive-year-body.expanded { display: block; }
+
+/* Month table inside year body */
+.archive-month-table {
+    width: 100%; border-collapse: collapse;
+}
+.archive-month-table th {
+    padding: 8px 14px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-base);
+    white-space: nowrap;
+}
+.archive-month-table td {
+    padding: 11px 14px;
+    font-size: 13px;
+}
+
+/* ── Reconciliation history table rows ─────────────────── */
+.recon-history-row { border-bottom: 1px solid var(--border-subtle); }
+.recon-history-row:last-child { border-bottom: none; }
+.recon-history-row:hover td { background: var(--bg-elevated) !important; }
+
+/* ── Unlock details/form inside accordion ──────────────── */
+.unlock-details { margin: 0; }
+.unlock-summary {
+    cursor: pointer;
+    font-size: 12.5px;
+    color: var(--accent-hover);
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 0;
+    user-select: none;
+}
+.unlock-summary::-webkit-details-marker { display: none; }
+.unlock-summary::before {
+    content: '';
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    transition: transform .15s;
+    margin-right: 2px;
+}
+details[open] .unlock-summary::before { transform: rotate(-135deg); }
+.unlock-form {
+    margin-top: 10px;
+    padding: 14px 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    max-width: 420px;
+}
+details summary { color: var(--accent-hover) !important; cursor: pointer; font-size: 12.5px; }
+
+/* ── View Modal ─────────────────────────────────────────── */
+.recon-view-overlay {
+    position: fixed; inset: 0; z-index: 9000;
+    background: rgba(0,0,0,.72);
+    backdrop-filter: blur(4px);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+}
+.recon-view-modal {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.6);
+    width: 100%; max-width: 680px;
+    max-height: 90vh; overflow-y: auto;
+    padding: 28px 28px 22px;
+}
+.recon-modal-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 16px; margin-bottom: 22px; flex-wrap: wrap;
+}
+.recon-modal-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px; margin-bottom: 20px;
+}
+.recon-modal-stat {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px; padding: 14px 16px;
+}
+.recon-modal-stat-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-muted); margin-bottom: 6px;
+}
+.recon-modal-stat-value {
+    font-size: 20px; font-weight: 700; font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+.recon-modal-table-wrap { overflow-x: auto; margin-bottom: 16px; }
+.recon-modal-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 13px;
+}
+.recon-modal-table th {
+    padding: 8px 12px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--text-muted);
+    border-bottom: 1px solid var(--border-subtle); text-align: left;
+    background: var(--bg-base);
+}
+.recon-modal-table td {
+    padding: 10px 12px; color: var(--text-primary);
+    border-bottom: 1px solid var(--border-subtle);
+}
+.recon-modal-footer {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    padding: 12px 0 0; align-items: center;
+}
+
+/* ── Print ─────────────────────────────────────────────── */
+@media print {
+    .recon-view-overlay { display: none !important; }
+}
+</style>
+
+
+<script>
+const MONTH_NAMES = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function fmt(v) {
+    return '£' + parseFloat(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function openReconModal(row) {
+    const month    = parseInt(row.dataset.month);
+    const year     = row.dataset.year;
+    const date     = row.dataset.date;
+    const ledger   = row.dataset.ledger;
+    const cashbook = row.dataset.cashbook;
+    const bank     = row.dataset.bank;
+    const variance = parseFloat(row.dataset.variance);
+    const locked   = row.dataset.locked === '1';
+    const lockedBy = row.dataset.lockedBy;
+    const lockedTs = row.dataset.lockedTs;
+    const created  = row.dataset.created;
+    const recBy    = row.dataset.reconciledBy;
+    const notes    = row.dataset.notes;
+    const version  = row.dataset.version;
+    const isCurrent = row.dataset.isCurrent === '1';
+    const recId    = row.dataset.recId;
+    const statusLabel = isCurrent ? (locked ? 'Current' : 'Live') : 'Archived';
+
+    // Title & meta
+    document.getElementById('recon-modal-title').textContent =
+        MONTH_NAMES[month] + ' ' + year + ' — Version ' + version;
+    const metaParts = ['Date: ' + date, 'Version: ' + version, 'Status: ' + statusLabel];
+    if (lockedTs) metaParts.push('Locked: ' + lockedTs.slice(0, 16));
+    if (created) metaParts.push('Recorded: ' + created.slice(0,16));
+    document.getElementById('recon-modal-meta').textContent = metaParts.join('  ·  ');
+
+    // Summary stat cards
+    document.getElementById('rm-ledger').textContent   = fmt(ledger);
+    document.getElementById('rm-cashbook').textContent = fmt(cashbook);
+    document.getElementById('rm-bank').textContent     = fmt(bank);
+    const varEl = document.getElementById('rm-variance');
+    varEl.textContent = fmt(Math.abs(variance));
+    varEl.style.color = Math.abs(variance) < 0.005 ? 'var(--success)' : 'var(--danger)';
+
+    // Confirmation table
+    const tick = '<span class="recon-match" style="font-size:12px;">✓ Confirmed</span>';
+    document.getElementById('rmt-ledger').textContent   = fmt(ledger);
+    document.getElementById('rmt-ledger-chk').innerHTML = tick;
+    document.getElementById('rmt-cashbook').textContent   = fmt(cashbook);
+    document.getElementById('rmt-cashbook-chk').innerHTML = tick;
+    document.getElementById('rmt-bank').textContent   = fmt(bank);
+    document.getElementById('rmt-bank-chk').innerHTML = tick;
+    document.getElementById('rmt-variance').textContent = fmt(Math.abs(variance));
+    const varChkEl = document.getElementById('rmt-variance-chk');
+    if (Math.abs(variance) < 0.005) {
+        varChkEl.innerHTML = '<span class="recon-match" style="font-size:12px;">✓ Zero Variance</span>';
+    } else {
+        varChkEl.innerHTML = '<span class="recon-miss" style="font-size:12px;">⚠ Variance Present</span>';
+    }
+
+    // Footer
+    document.getElementById('rm-id').textContent = '#' + recId;
+    document.getElementById('rm-version').textContent = 'v' + version;
+    const lockEl = document.getElementById('rm-lock-status');
+    const statusClass = isCurrent ? (locked ? 'status-cleared' : 'status-open') : 'status-pending';
+    lockEl.innerHTML = '<span class="status-badge ' + statusClass + '" style="font-size:11px;">' + statusLabel +
+        (locked && lockedBy ? ' — ' + lockedBy : '') + '</span>';
+    const notesWrap = document.getElementById('rm-notes-wrap');
+    if (notes) {
+        document.getElementById('rm-notes').textContent = notes;
+        notesWrap.style.display = '';
+    } else {
+        notesWrap.style.display = 'none';
+    }
+
+    document.getElementById('recon-view-overlay').style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+
+    // Store data for print
+    window._currentReconPrintData = {
+        title: MONTH_NAMES[month] + ' ' + year + ' — Month-End Reconciliation',
+        date, ledger, cashbook, bank, variance, locked, lockedBy, lockedTs,
+        created, recBy, notes, version, recId, statusLabel, isCurrent
+    };
+}
+
+function closeReconModal() {
+    document.getElementById('recon-view-overlay').style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+function printReconModal() {
+    const d = window._currentReconPrintData;
+    if (!d) return;
+    const varAbs = Math.abs(parseFloat(d.variance));
+    const isZeroVar = varAbs < 0.005;
+    const metaParts = ['Date: ' + d.date, 'Version: ' + d.version, 'Status: ' + (d.statusLabel || 'Archived')];
+    if (d.lockedTs) metaParts.push('Locked: ' + d.lockedTs.slice(0, 16));
+    if (d.created) metaParts.push('Recorded: ' + d.created.slice(0,16));
+    const win = window.open('', '_blank', 'width=800,height=700');
+    win.document.write(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${d.title}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         margin: 0; padding: 32px 40px; color: #111; background: #fff; font-size: 13px; }
+  .print-header { border-bottom: 2px solid #1a1a2e; padding-bottom: 18px; margin-bottom: 24px; }
+  .print-firm   { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #666; margin-bottom: 6px; }
+  .print-title  { font-size: 20px; font-weight: 700; color: #1a1a2e; margin: 0 0 4px; }
+  .print-meta   { font-size: 11.5px; color: #555; }
+  .stat-row     { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+  .stat-box     { border: 1px solid #ddd; border-radius: 6px; padding: 14px 16px; }
+  .stat-label   { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #888; margin-bottom: 6px; }
+  .stat-value   { font-size: 18px; font-weight: 700; font-family: 'Courier New', monospace; color: #1a1a2e; }
+  table         { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  th            { padding: 8px 12px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+                  color: #888; border-bottom: 2px solid #ddd; text-align: left; background: #f8f8f8; }
+  td            { padding: 10px 12px; border-bottom: 1px solid #eee; }
+  .match        { color: #059669; font-weight: 600; }
+  .miss         { color: #dc2626; font-weight: 600; }
+  .footer-row   { display: flex; gap: 24px; flex-wrap: wrap; padding-top: 16px; border-top: 1px solid #eee;
+                  font-size: 11.5px; color: #666; }
+  .notice       { margin-top: 20px; padding: 12px 16px; background: #f0fdf4; border: 1px solid #bbf7d0;
+                  border-radius: 6px; font-size: 12px; color: #166534; }
+  .compliance   { margin-top: 20px; font-size: 11px; color: #999; border-top: 1px solid #eee; padding-top: 16px; }
+  @page { margin: 20mm; }
+</style>
+</head>
+<body>
+<div class="print-header">
+  <div class="print-firm">Nexal Legal — Client Money Reconciliation — SRA Accounts Rules Compliant</div>
+  <div class="print-title">${d.title}</div>
+  <div class="print-meta">${metaParts.join('  ·  ')}</div>
+  <div class="print-meta" style="margin-top:4px;">Version ${d.version} — ${d.statusLabel || 'Archived'}</div>
+</div>
+
+<div class="stat-row">
+  <div class="stat-box">
+    <div class="stat-label">Client Ledger Total</div>
+    <div class="stat-value">${fmt_print(d.ledger)}</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-label">Client Cashbook Total</div>
+    <div class="stat-value">${fmt_print(d.cashbook)}</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-label">Client Bank Balance</div>
+    <div class="stat-value">${fmt_print(d.bank)}</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-label">Variance</div>
+    <div class="stat-value" style="color: ${isZeroVar ? '#059669' : '#dc2626'}">
+      ${fmt_print(varAbs.toFixed(2))}
+    </div>
+  </div>
+</div>
+
+<table>
+  <thead><tr><th>Field</th><th style="text-align:right;">Value</th><th>Confirmation</th></tr></thead>
+  <tbody>
+    <tr><td>Client Ledger Total</td><td style="text-align:right; font-family:monospace;">${fmt_print(d.ledger)}</td><td class="match">✓ Confirmed</td></tr>
+    <tr><td>Client Cashbook Total</td><td style="text-align:right; font-family:monospace;">${fmt_print(d.cashbook)}</td><td class="match">✓ Confirmed</td></tr>
+    <tr><td>Client Bank Balance</td><td style="text-align:right; font-family:monospace;">${fmt_print(d.bank)}</td><td class="match">✓ Confirmed</td></tr>
+    <tr style="font-weight:700;"><td>Variance</td><td style="text-align:right; font-family:monospace;">${fmt_print(varAbs.toFixed(2))}</td>
+      <td class="${isZeroVar ? 'match' : 'miss'}">${isZeroVar ? '✓ Zero Variance' : '⚠ Variance Present'}</td></tr>
+  </tbody>
+</table>
+
+<div class="footer-row">
+  <div><strong>Record ID:</strong> #${d.recId}</div>
+  <div><strong>Version:</strong> v${d.version}</div>
+  <div><strong>Lock status:</strong> ${d.locked === '1' ? 'Locked' + (d.lockedBy ? ' by ' + d.lockedBy : '') : 'Active'}</div>
+  ${d.notes ? '<div><strong>Notes:</strong> ' + escHtml(d.notes) + '</div>' : ''}
+</div>
+
+<div class="notice">
+  ✓ This reconciliation record shows a zero variance. Client ledger, cashbook, and bank balance are in agreement.
+</div>
+
+<div class="compliance">
+  This document is an immutable historical reconciliation record generated by Nexal Legal.
+  Printed: ${new Date().toLocaleString('en-GB')} &nbsp;·&nbsp; Nexal Solutions &nbsp;·&nbsp; SRA Accounts Rules compliance record.
+</div>
+</body>
+</html>
+`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 500);
+}
+
+function fmt_print(v) {
+    return '£' + parseFloat(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Archive accordion ────────────────────────────────────────────────
+function setYearOpen(btn, open) {
+    const targetId = btn.dataset.target;
+    const body = document.getElementById(targetId);
+    if (!body) return;
+    if (open) {
+        body.classList.add('expanded');
+        btn.classList.add('open');
+        btn.setAttribute('aria-expanded', 'true');
+    } else {
+        body.classList.remove('expanded');
+        btn.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+    }
+}
+
+document.querySelectorAll('.archive-year-toggle').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const isOpen = this.classList.contains('open');
+        setYearOpen(this, !isOpen);
+    });
+});
+
+document.getElementById('archive-expand-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.archive-year-toggle').forEach(btn => setYearOpen(btn, true));
+});
+document.getElementById('archive-collapse-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.archive-year-toggle').forEach(btn => setYearOpen(btn, false));
+});
+
+// ── Wire up View buttons ────────────────────────────────────────────
+document.querySelectorAll('.view-recon-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const row = document.querySelector('.recon-history-row[data-rec-id="' + this.dataset.recId + '"]');
+        if (row) openReconModal(row);
+    });
+});
+
+// Close on overlay click
+document.getElementById('recon-view-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closeReconModal();
+});
+
+// Esc key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeReconModal();
+});
+</script>
+
+{% endblock %}

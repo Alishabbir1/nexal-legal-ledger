@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block page_title %}Forensic Ledger Audit{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:20px;">
+        <div>
+            <h2 style="margin:0 0 5px;">Forensic Ledger Audit</h2>
+            <p style="margin:0; font-size:13px; color:var(--text-secondary);">
+                Client: <strong style="color:var(--text-primary);">{{ client.client_code }}</strong> — {{ client.client_name }}
+            </p>
+            <p style="margin:6px 0 0; font-size:12.5px; color:var(--text-muted); max-width:760px; line-height:1.55;">
+                Read-only forensic view. For each row in chronological order, the <strong>running incremental</strong> balance
+                applies the same rules as the on-screen running total. The <strong>database authoritative</strong> column is
+                an independent SQL sum through the same point. Divergence between the two columns identifies the first
+                anomalous row.
+            </p>
+        </div>
+        <a href="{{ url_for('client_ledger', client_id=client.id) }}" class="btn btn-secondary" style="white-space:nowrap;">← Back to Ledger</a>
+    </div>
+
+    <!-- Summary banner -->
+    {% if report.final_ok and not report.first_discrepancy %}
+    <div class="alert alert-success" style="margin-bottom:16px;">
+        <strong>Audit passed.</strong>
+        Rows: {{ report.row_count }} &nbsp;·&nbsp;
+        Final incremental: £{{ report.final_running_incremental }} &nbsp;·&nbsp;
+        Database balance: £{{ report.final_database_balance }} &nbsp;·&nbsp;
+        Difference: £{{ report.final_difference }}<br>
+        No per-row discrepancy detected (within £0.01).
+    </div>
+    {% else %}
+    <div class="alert alert-warning" style="margin-bottom:16px;">
+        <strong>Discrepancy detected.</strong>
+        Rows: {{ report.row_count }} &nbsp;·&nbsp;
+        Final incremental: £{{ report.final_running_incremental }} &nbsp;·&nbsp;
+        Database balance: £{{ report.final_database_balance }} &nbsp;·&nbsp;
+        Difference: £{{ report.final_difference }}<br>
+        See flagged row(s) below.
+    </div>
+    {% endif %}
+
+    {% if report.first_discrepancy %}
+    <div class="alert alert-error" style="margin-bottom:16px;">
+        <strong>First discrepancy at Ledger ID {{ report.first_discrepancy.ledger_id }}</strong><br>
+        Date: {{ report.first_discrepancy.transaction_date }} &nbsp;·&nbsp;
+        Type: {{ report.first_discrepancy.transaction_type }} &nbsp;·&nbsp;
+        Amount: £{{ report.first_discrepancy.amount }}<br>
+        After incremental: £{{ report.first_discrepancy.running_incremental }} &nbsp;·&nbsp;
+        Database authoritative: £{{ report.first_discrepancy.database_authoritative }} &nbsp;·&nbsp;
+        Difference: £{{ report.first_discrepancy.difference }}
+    </div>
+    {% endif %}
+
+    <!-- Audit table -->
+    <div style="overflow-x:auto; margin-bottom:28px;">
+        <table style="font-size:12.5px; width:100%;">
+            <thead>
+                <tr>
+                    <th>ID</th><th>Date</th><th>Type</th><th style="text-align:right;">Amount</th>
+                    <th style="text-align:right;">Delta</th><th style="text-align:right;">Before</th>
+                    <th style="text-align:right;">Running</th><th style="text-align:right;">DB Auth.</th>
+                    <th style="text-align:right;">Diff</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in report.rows %}
+                <tr {% if r.flagged %}style="background:var(--danger-dim) !important; font-weight:600;"{% endif %}>
+                    <td><code style="font-size:11px;">{{ r.ledger_id }}</code></td>
+                    <td style="font-family:var(--font-mono); white-space:nowrap;">{{ r.transaction_date }}</td>
+                    <td>{{ r.transaction_type }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ r.amount }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ r.delta_applied }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ r.balance_before }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ r.running_incremental }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono);">£{{ r.database_authoritative }}</td>
+                    <td style="text-align:right; font-family:var(--font-mono); {% if r.flagged %}color:var(--danger);{% endif %}">£{{ r.difference }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Plain-text report -->
+    <h3 style="margin:0 0 10px; font-size:13px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.06em;">Plain-Text Report</h3>
+    <pre style="background:var(--bg-elevated); border:1px solid var(--border-subtle); padding:14px 16px; border-radius:8px; overflow:auto; font-size:11.5px; max-height:400px; color:var(--text-secondary); line-height:1.6;">===== LEDGER AUDIT (read-only) =====
+Client: {{ client.client_code }} | {{ client.client_name }}
+Rows: {{ report.row_count }}
+Final incremental: £{{ report.final_running_incremental }} | DB balance: £{{ report.final_database_balance }} | Diff: £{{ report.final_difference }}
+{% if report.first_discrepancy %}
+FIRST DISCREPANCY at ledger_id={{ report.first_discrepancy.ledger_id }} date={{ report.first_discrepancy.transaction_date }} diff=£{{ report.first_discrepancy.difference }}
+{% endif %}
+{% for r in report.rows %}
+TXN ledger_id={{ r.ledger_id }} txn_id={{ r.transaction_id }} date={{ r.transaction_date }} type={{ r.transaction_type }} amount=£{{ r.amount }}
+  Before: £{{ r.balance_before }} | Running: £{{ r.running_incremental }} | DB: £{{ r.database_authoritative }} | Diff: £{{ r.difference }}{% if r.flagged %}  <<< FLAG{% endif %}
+{% endfor %}
+===== END =====</pre>
+</div>
+{% endblock %}

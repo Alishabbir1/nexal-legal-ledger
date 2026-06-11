@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block page_title %}Reports & Exports{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Reports &amp; Exports</h2>
+
+    <!-- Client Ledger Report -->
+    <div style="margin-top:28px; padding-top:22px; border-top:1px solid var(--border-subtle);">
+        <h3 style="margin:0 0 14px;">Client Ledger Report</h3>
+        <form method="GET" action="{{ url_for('export_ledger_pdf') }}" style="margin-bottom:10px;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:14px; margin-bottom:14px;">
+                <div class="form-group" style="margin:0;">
+                    <label>Client</label>
+                    <select name="client_id">
+                        <option value="">All Clients</option>
+                        {% for client in clients %}
+                        <option value="{{ client.id }}">{{ client.client_code }} — {{ client.client_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>From Date</label>
+                    <input type="date" name="date_from">
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>To Date</label>
+                    <input type="date" name="date_to">
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>Created By</label>
+                    <select name="created_by">
+                        <option value="">All Users</option>
+                        {% for user in users %}
+                        <option value="{{ user.username }}">{{ user.username }} ({{ user.role|capitalize }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="submit" class="btn">Export to PDF</button>
+                <button type="submit" formaction="{{ url_for('export_ledger_csv') }}" class="btn btn-secondary">Export to CSV</button>
+                <button type="submit" formaction="{{ url_for('export_ledger_xlsx') }}" class="btn btn-secondary">Export to Excel</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Cashbook Report -->
+    <div style="margin-top:28px; padding-top:22px; border-top:1px solid var(--border-subtle);">
+        <h3 style="margin:0 0 14px;">Cashbook Report</h3>
+        <form method="GET" action="{{ url_for('export_cashbook_pdf') }}" style="margin-bottom:10px;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:14px; margin-bottom:14px;">
+                <div class="form-group" style="margin:0;">
+                    <label>From Date</label>
+                    <input type="date" name="date_from">
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>To Date</label>
+                    <input type="date" name="date_to">
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>Created By</label>
+                    <select name="created_by">
+                        <option value="">All Users</option>
+                        {% for user in users %}
+                        <option value="{{ user.username }}">{{ user.username }} ({{ user.role|capitalize }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="submit" class="btn">Export to PDF</button>
+                <button type="submit" formaction="{{ url_for('export_cashbook_csv') }}" class="btn btn-secondary">Export to CSV</button>
+                <button type="submit" formaction="{{ url_for('export_cashbook_xlsx') }}" class="btn btn-secondary">Export to Excel</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Office Account Reports -->
+    <div style="margin-top:28px; padding-top:22px; border-top:1px solid var(--border-subtle);">
+        <h3 style="margin:0 0 14px;">Office Account Reports</h3>
+
+        {% set office_reports = [
+            ('Office Income Summary',   url_for('export_office_income_pdf'),   url_for('export_office_income_csv'),   url_for('export_office_income_xlsx')),
+            ('Office Expenses Summary', url_for('export_office_expenses_pdf'),  url_for('export_office_expenses_csv'),  url_for('export_office_expenses_xlsx')),
+            ('Net Profit Report',       url_for('export_office_profit_pdf'),    url_for('export_office_profit_csv'),    url_for('export_office_profit_xlsx'))
+        ] %}
+        {% for label, pdf_url, csv_url, xlsx_url in office_reports %}
+        <div style="margin-bottom:20px; padding:16px; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:8px;">
+            <div style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:12px;">{{ label }}</div>
+            <form method="GET" action="{{ pdf_url }}">
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; margin-bottom:12px;">
+                    <div class="form-group" style="margin:0;">
+                        <label>From Date</label>
+                        <input type="date" name="date_from">
+                    </div>
+                    <div class="form-group" style="margin:0;">
+                        <label>To Date</label>
+                        <input type="date" name="date_to">
+                    </div>
+                    <div class="form-group" style="margin:0;">
+                        <label>Created By</label>
+                        <select name="created_by">
+                            <option value="">All Users</option>
+                            {% for user in users %}
+                            <option value="{{ user.username }}">{{ user.username }} ({{ user.role|capitalize }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button type="submit" class="btn">Export to PDF</button>
+                    <button type="submit" formaction="{{ csv_url }}" class="btn btn-secondary">Export to CSV</button>
+                    <button type="submit" formaction="{{ xlsx_url }}" class="btn btn-secondary">Export to Excel</button>
+                </div>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- SRA Compliance -->
+    <div style="margin-top:28px; padding-top:22px; border-top:1px solid var(--border-subtle);">
+        <h3 style="margin:0 0 10px;">SRA Compliance Documentation</h3>
+        <p style="color:var(--text-secondary); margin-bottom:18px; font-size:13.5px;">
+            View how Nexal Legal aligns with the SRA Accounts Rules 2019.
+        </p>
+        <a href="{{ url_for('static', filename='docs/SRA_Compliance_Overview.pdf') }}"
+           target="_blank"
+           class="btn btn-secondary"
+           style="display:inline-flex; align-items:center; gap:8px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+            </svg>
+            View SRA Compliance Overview (PDF)
+        </a>
+    </div>
+</div>
+{% endblock %}

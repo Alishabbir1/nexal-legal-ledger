@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Nexal Legal | {{ self.page_title() }}{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="{{ url_for('static', filename='js/theme-init.js') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/enterprise.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/password-toggle.css') }}">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+<div class="app-shell">
+
+    <!-- ─── SIDEBAR ──────────────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+
+        <div class="sidebar-brand">
+            <div class="brand-mark">NL</div>
+            <div class="brand-text">
+                <span class="brand-name">Nexal Legal</span>
+                <span class="brand-sub">Nexal Solutions</span>
+            </div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-section">
+                <span class="nav-section-label">Client Operations</span>
+
+                <a href="{{ url_for('client_ledger') }}"
+                   class="nav-item {% if request.endpoint in ['client_ledger','new_client','new_transaction','transfer_fee_to_office','admin_audit_ledger'] %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                    Client Ledger
+                </a>
+
+                <a href="{{ url_for('cashbook') }}"
+                   class="nav-item {% if request.endpoint in ['cashbook','new_cashbook_transaction'] %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
+                        <line x1="1" y1="10" x2="23" y2="10"/>
+                    </svg>
+                    Client Cashbook
+                </a>
+
+                <a href="{{ url_for('office_account') }}"
+                   class="nav-item {% if request.endpoint == 'office_account' or (request.endpoint and 'office' in request.endpoint) %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+                        <polyline points="9 22 9 12 15 12 15 22"/>
+                    </svg>
+                    Office Account
+                </a>
+
+                <a href="{{ url_for('reconciliation') }}"
+                   class="nav-item {% if request.endpoint in ['reconciliation','new_reconciliation'] %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="8" y1="6" x2="21" y2="6"/>
+                        <line x1="8" y1="12" x2="21" y2="12"/>
+                        <line x1="8" y1="18" x2="21" y2="18"/>
+                        <line x1="3" y1="6" x2="3.01" y2="6"/>
+                        <line x1="3" y1="12" x2="3.01" y2="12"/>
+                        <line x1="3" y1="18" x2="3.01" y2="18"/>
+                    </svg>
+                    Reconciliation
+                </a>
+
+                <a href="{{ url_for('reports') }}"
+                   class="nav-item {% if request.endpoint == 'reports' or (request.endpoint and 'export' in request.endpoint) %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 20V10m-6 10V4M6 20v-6"/>
+                    </svg>
+                    Reports
+                </a>
+            </div>
+
+            {% if current_role == 'admin' %}
+            <div class="nav-section">
+                <span class="nav-section-label">Administration</span>
+
+                {% if override_mode_active %}
+                <div class="override-sidebar-status">
+                    <span class="override-sidebar-dot"></span>
+                    <span class="override-sidebar-label">Override Active</span>
+                </div>
+                {% endif %}
+
+                <a href="{{ url_for('override_mode') }}"
+                   class="nav-item {% if request.endpoint == 'override_mode' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    Override Mode
+                </a>
+
+                <a href="{{ url_for('user_management') }}"
+                   class="nav-item {% if request.endpoint == 'user_management' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+                    </svg>
+                    Users
+                </a>
+
+                <a href="{{ url_for('admin_security') }}"
+                   class="nav-item {% if request.endpoint == 'admin_security' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    Security
+                </a>
+
+                <a href="{{ url_for('audit_log') }}"
+                   class="nav-item {% if request.endpoint == 'audit_log' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                    Audit Log
+                </a>
+
+                <a href="{{ url_for('system_backups') }}"
+                   class="nav-item {% if request.endpoint == 'system_backups' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                        <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                        <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                    </svg>
+                    Backups
+                </a>
+
+                <a href="{{ url_for('system_health') }}"
+                   class="nav-item {% if request.endpoint == 'system_health' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                    </svg>
+                    System Health
+                </a>
+            </div>
+            {% endif %}
+
+        </nav>
+
+        {% if current_username %}
+        <div class="sidebar-footer">
+            <div class="user-panel">
+                <div class="user-avatar">{{ current_username[0]|upper }}</div>
+                <div class="user-info">
+                    <span class="user-name">{{ current_username }}</span>
+                    <span class="user-role">{% if current_role %}{{ current_role|capitalize }}{% endif %}</span>
+                </div>
+            </div>
+            <a href="{{ url_for('logout') }}" class="btn-logout">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+                    <polyline points="16 17 21 12 16 7"/>
+                    <line x1="21" y1="12" x2="9" y2="12"/>
+                </svg>
+                Sign Out
+            </a>
+        </div>
+        {% endif %}
+
+    </aside>
+
+    <!-- ─── MAIN ──────────────────────────────────────────────────────── -->
+    <div class="app-main">
+
+        <header class="topbar">
+            <div class="topbar-left">
+                <span class="topbar-page-title">{% block page_title %}Dashboard{% endblock %}</span>
+            </div>
+            <div class="topbar-right">
+                <span class="env-badge">Sandbox</span>
+                <span class="compliance-badge">SRA Compliance Active</span>
+                <button class="theme-toggle-btn" id="themeToggleBtn" title="Switch theme">
+                    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <span id="themeToggleLabel">Light Mode</span>
+                </button>
+            </div>
+        </header>
+
+        {% if override_mode_active %}
+        <div class="override-banner">
+            <div class="override-banner-inner">
+                <div class="override-banner-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </div>
+                <div>
+                    <div class="override-banner-title">Override Premium Mode Active</div>
+                    <div class="override-banner-desc">Transactions may use the full client cashbook balance. Strict per-client limits are suspended. All actions are audit-logged.</div>
+                </div>
+                <div class="override-banner-meta">
+                    Enabled by: {{ override_mode_by or 'Unknown' }}<br>
+                    Reason: {{ override_mode_reason or '—' }}
+                </div>
+                {% if current_role == 'admin' %}
+                <div class="override-banner-actions">
+                    <form method="post" action="{{ url_for('override_mode') }}" style="display:inline;">
+                        <input type="hidden" name="action" value="disable">
+                        <button type="submit" class="btn btn-sm" style="border-color:rgba(251,191,36,0.5);color:var(--warning);">Disable Override</button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <main class="content">
+
+            {% if dashboard_alerts %}
+            {% for alert in dashboard_alerts %}
+            <div class="alert alert-{{ alert.type }}"
+                 data-alert-id="sys-{{ alert.msg | lower | replace(' ', '-') | replace('(', '') | replace(')', '') | replace('>', '') | replace('<', '') | replace('/', '') }}"
+                 data-auto-dismiss="20000"
+                 style="{% if alert.type == 'warning' %}background: var(--warning-dim); border-color: rgba(251,191,36,0.22); color: var(--warning);{% elif alert.type == 'error' %}background: var(--danger-dim); border-color: rgba(248,113,113,0.22); color: var(--danger);{% else %}background: var(--info-dim); border-color: rgba(96,165,250,0.22); color: var(--info);{% endif %}">
+                <strong>{{ alert.msg }}</strong>
+                {% if alert.link %}
+                &nbsp;<a href="{{ alert.link }}" style="margin-left:4px;">{{ alert.link_text or 'View →' }}</a>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }}" data-flash-category="{{ category }}">{{ message }}</div>
+            {% endfor %}
+            {% endif %}
+            {% endwith %}
+
+            {% block content %}{% endblock %}
+
+        </main>
+    </div>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/password-toggle.js') }}"></script>
+{% block extra_js %}{% endblock %}
+
+<!-- ── Notification System ───────────────────────────────────────── -->
+<script>
+(function () {
+    var FADE_MS         = 560;    /* matches CSS transition */
+    var COLLAPSE_DELAY  = 100;
+    var SS_PREFIX       = 'ss-dismissed-';
+
+    /* ── Core dismiss function ── */
+    function dismissAlert(el, saveId) {
+        if (el._dismissing) return;
+        el._dismissing = true;
+        if (saveId) {
+            try { sessionStorage.setItem(SS_PREFIX + saveId, '1'); } catch (e) {}
+        }
+        el.classList.add('alert--out');
+        setTimeout(function () {
+            el.classList.add('alert--collapsed');
+            setTimeout(function () {
+                if (el.parentNode) el.parentNode.removeChild(el);
+            }, FADE_MS);
+        }, FADE_MS + COLLAPSE_DELAY);
+    }
+
+    function addCloseButton(el, alertId) {
+        var btn = document.createElement('button');
+        btn.className = 'alert-close';
+        btn.setAttribute('aria-label', 'Dismiss');
+        btn.innerHTML = '&times;';
+        btn.addEventListener('click', function () { dismissAlert(el, alertId); });
+        el.appendChild(btn);
+    }
+
+    function addDrainBar(el, durationMs) {
+        var bar = document.createElement('span');
+        bar.className = 'alert-drain';
+        bar.style.animationDuration = (durationMs / 1000) + 's';
+        el.appendChild(bar);
+        return bar;
+    }
+
+    function scheduleAutoDismiss(el, alertId, delayMs) {
+        var bar  = addDrainBar(el, delayMs);
+        var timer = setTimeout(function () { dismissAlert(el, alertId); }, delayMs);
+
+        el.addEventListener('mouseenter', function () {
+            clearTimeout(timer);
+            bar.style.animationPlayState = 'paused';
+        });
+        el.addEventListener('mouseleave', function () {
+            bar.style.animationPlayState = 'running';
+            bar.style.width = '0%';
+            timer = setTimeout(function () { dismissAlert(el, alertId); }, 8000);
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.alert').forEach(function (el) {
+            var alertId  = el.getAttribute('data-alert-id') || null;
+            var flashCat = el.getAttribute('data-flash-category') || '';
+            var autoDismissMs = parseInt(el.getAttribute('data-auto-dismiss') || '0', 10);
+
+            /* ── Dashboard / system alerts (data-alert-id set) ── */
+            if (alertId) {
+                /* If dismissed this session, remove silently */
+                try {
+                    if (sessionStorage.getItem(SS_PREFIX + alertId)) {
+                        el.style.display = 'none';
+                        return;
+                    }
+                } catch (e) {}
+
+                addCloseButton(el, alertId);
+                /* Auto-dismiss after the configured duration (default 20s) */
+                var ms = autoDismissMs || 20000;
+                scheduleAutoDismiss(el, alertId, ms);
+                return;
+            }
+
+            /* ── Flash messages ── */
+            if (!flashCat) return;
+
+            /* error and warning: close button only, no auto-dismiss */
+            if (flashCat === 'error' || flashCat === 'warning') {
+                addCloseButton(el, null);
+                return;
+            }
+
+            /* success: 8s, info: 20s */
+            var flashMs = (flashCat === 'success') ? 8000 : 20000;
+            addCloseButton(el, null);
+            scheduleAutoDismiss(el, null, flashMs);
+        });
+    });
+}());
+</script>
+
+<!-- ── Theme Switch Modal ─────────────────────────────────────────── -->
+<div class="theme-modal-backdrop" id="themeModal" role="dialog" aria-modal="true" aria-labelledby="themeModalTitle">
+    <div class="theme-modal-card">
+        <div class="theme-modal-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+        </div>
+        <h3 id="themeModalTitle">Switch to Light Mode?</h3>
+        <p>This changes the application appearance only. No financial data, accounting records, or operational settings will be affected.</p>
+        <div class="theme-modal-actions">
+            <button class="btn btn-primary" id="themeConfirmBtn" style="flex:1;">Switch Theme</button>
+            <button class="btn" id="themeCancelBtn" style="flex:1;">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    /* Sun icon (shown when in dark mode — clicking goes to light) */
+    var SUN_SVG = '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
+    /* Moon icon (shown when in light mode — clicking goes to dark) */
+    var MOON_SVG = '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>';
+
+    var toggleBtn   = document.getElementById('themeToggleBtn');
+    var toggleIcon  = document.getElementById('themeIcon');
+    var toggleLabel = document.getElementById('themeToggleLabel');
+    var modal       = document.getElementById('themeModal');
+    var modalTitle  = document.getElementById('themeModalTitle');
+    var confirmBtn  = document.getElementById('themeConfirmBtn');
+    var cancelBtn   = document.getElementById('themeCancelBtn');
+
+    var pendingTheme = null;
+
+    function currentTheme() {
+        return document.documentElement.getAttribute('data-theme') || 'dark';
+    }
+
+    function syncToggle(theme) {
+        if (!toggleLabel || !toggleIcon) return;
+        if (theme === 'light') {
+            toggleLabel.textContent = 'Dark Mode';
+            toggleIcon.innerHTML = MOON_SVG;
+        } else {
+            toggleLabel.textContent = 'Light Mode';
+            toggleIcon.innerHTML = SUN_SVG;
+        }
+    }
+
+    /* Apply saved preference immediately (also done by theme-init.js — this keeps UI in sync) */
+    syncToggle(currentTheme());
+
+    function openModal(targetTheme) {
+        pendingTheme = targetTheme;
+        if (modalTitle) {
+            modalTitle.textContent = 'Switch to ' + (targetTheme === 'light' ? 'Light' : 'Dark') + ' Mode?';
+        }
+        if (modal) modal.classList.add('open');
+    }
+
+    function closeModal() {
+        if (modal) modal.classList.remove('open');
+        pendingTheme = null;
+    }
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('ss-theme', theme);
+        syncToggle(theme);
+    }
+
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', function () {
+            openModal(currentTheme() === 'dark' ? 'light' : 'dark');
+        });
+    }
+
+    if (confirmBtn) {
+        confirmBtn.addEventListener('click', function () {
+            if (pendingTheme) applyTheme(pendingTheme);
+            closeModal();
+        });
+    }
+
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+
+    if (modal) {
+        modal.addEventListener('click', function (e) {
+            if (e.target === modal) closeModal();
+        });
+    }
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && modal && modal.classList.contains('open')) closeModal();
+    });
+}());
+</script>
+</body>
+</html>

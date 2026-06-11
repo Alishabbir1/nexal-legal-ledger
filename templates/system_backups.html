@@ -1,0 +1,537 @@
+{% extends "base.html" %}
+{% block page_title %}System Backups{% endblock %}
+
+{% block content %}
+
+{# ── Nightly Backup Scheduler Status panel ────────────────────── #}
+<div class="card" style="margin-bottom:20px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+        <div>
+            <h3 style="margin:0 0 3px; font-size:14px;">Nightly Backup Schedule</h3>
+            <p style="margin:0; font-size:12px; color:var(--text-muted);">
+                Windows Task Scheduler · Independent of application state
+            </p>
+        </div>
+        {% if task_status.exists == true %}
+            {% if task_status.state in ('Ready', 'Running') %}
+            <span class="status-badge" style="background:var(--success-dim); color:var(--success); border:1px solid rgba(34,211,165,0.22);">
+                <span style="width:5px;height:5px;border-radius:50%;background:var(--success);display:inline-block;margin-right:5px;animation:pulseDot 2s ease-in-out infinite;"></span>
+                Active — Daily {{ task_status.state }}
+            </span>
+            {% else %}
+            <span class="status-badge" style="background:var(--warning-dim); color:var(--warning); border:1px solid rgba(251,191,36,0.22);">
+                <span style="width:5px;height:5px;border-radius:50%;background:var(--warning);display:inline-block;margin-right:5px;"></span>
+                {{ task_status.state }}
+            </span>
+            {% endif %}
+        {% elif task_status.exists == false %}
+            <span class="status-badge" style="background:var(--danger-dim); color:var(--danger); border:1px solid rgba(248,113,113,0.22);">
+                <span style="width:5px;height:5px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:5px;"></span>
+                Not Registered
+            </span>
+        {% else %}
+            <span class="status-badge" style="background:var(--bg-elevated); color:var(--text-muted); border:1px solid var(--border-subtle);">
+                Status Unknown
+            </span>
+        {% endif %}
+    </div>
+
+    {% if task_status.exists == true %}
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; margin-bottom:16px;">
+        <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:11px 13px;">
+            <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">Schedule</div>
+            <div style="font-size:13px; font-weight:600; color:var(--text-primary);">Daily at 03:00</div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Local machine time</div>
+        </div>
+        <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:11px 13px;">
+            <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">Last Successful Backup</div>
+            <div style="font-size:13px; font-weight:600; color:var(--text-primary);">
+                {{ last_backup.strftime('%d %b %Y  %H:%M') if last_backup else '—' }}
+            </div>
+        </div>
+        <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:11px 13px;">
+            <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">Next Scheduled Backup</div>
+            <div style="font-size:13px; font-weight:600; color:var(--text-primary);">
+                {{ task_status.next_run.strftime('%d %b %Y  %H:%M') if task_status.next_run else '—' }}
+            </div>
+        </div>
+        <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:11px 13px;">
+            <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">Task Scheduler</div>
+            <div style="font-size:13px; font-weight:600; color:var(--success);">Connected</div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+                {% if task_status.system_level %}Runs without login (SYSTEM){% else %}Runs when user is logged in{% endif %}
+            </div>
+        </div>
+        <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:11px 13px;">
+            <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">Backup Encryption</div>
+            <div style="font-size:13px; font-weight:600; color:var(--success);">AES-256 Enabled</div>
+        </div>
+        {% if task_status.last_result is not none %}
+        <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:11px 13px;">
+            <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">Last Task Result</div>
+            {% if task_status.last_result == 0 %}
+            <div style="font-size:13px; font-weight:600; color:var(--success);">Success (0)</div>
+            {% elif task_status.last_result == 267011 %}
+            <div style="font-size:13px; font-weight:600; color:var(--info);">Not yet run</div>
+            {% else %}
+            <div style="font-size:13px; font-weight:600; color:var(--warning);">Code {{ task_status.last_result }}</div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <form method="POST" action="{{ url_for('repair_backup_scheduler') }}"
+              onsubmit="return confirm('Re-register the nightly backup task? This will overwrite the existing task configuration.');">
+            <button type="submit" class="btn btn-secondary" style="font-size:12px;">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
+                    <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
+                </svg>
+                Re-register Task
+            </button>
+        </form>
+        <span style="font-size:11.5px; color:var(--text-muted);">
+            Task name: <code style="font-size:11px;">Nexal Nightly Backup</code>
+        </span>
+    </div>
+
+    {% elif task_status.exists == false %}
+    <div class="alert alert-warning" data-flash-category="warning" style="margin-bottom:14px;">
+        <strong>Automatic Backup Disabled.</strong>
+        The Windows scheduled task is not registered. Backups will only occur while the application is running.
+        Click below to repair.
+    </div>
+    <form method="POST" action="{{ url_for('repair_backup_scheduler') }}">
+        <button type="submit" class="btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 8 12 12 14 14"/>
+            </svg>
+            Repair Backup Scheduler
+        </button>
+    </form>
+
+    {% else %}
+    <div class="alert" style="background:var(--bg-elevated); border:1px solid var(--border-default); color:var(--text-secondary); font-size:12.5px; margin-bottom:0;">
+        Unable to read scheduler status. The application may lack permission to query Windows Task Scheduler.
+    </div>
+    {% endif %}
+</div>
+
+{# ── Stat overview ─────────────────────────────────────────────── #}
+<div class="stat-grid" style="margin-bottom:22px;">
+    <div class="stat-card">
+        <div class="stat-label">Backup Type</div>
+        <div class="stat-value" style="font-size:14px;">
+            {% if cloud_type == 'onedrive' %}
+            <span style="color:var(--success);">OneDrive</span>
+            {% elif cloud_type == 'custom' %}
+            <span style="color:var(--info);">Custom Folder</span>
+            {% else %}
+            <span style="color:var(--warning);">Local Only</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Encryption</div>
+        <div class="stat-value" style="font-size:14px; color:var(--success);">AES-256</div>
+    </div>
+    <div class="stat-card {% if usb_due %}stat-card-warn{% endif %}">
+        <div class="stat-label">USB Backup</div>
+        <div class="stat-value" style="font-size:14px; {% if usb_due %}color:var(--warning);{% else %}color:var(--success);{% endif %}">
+            {{ usb_status }}
+        </div>
+    </div>
+</div>
+
+{# ── Cloud / Network Backup Destination card ───────────────────── #}
+<div class="card" style="margin-bottom:20px;">
+
+    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:18px;">
+        <div>
+            <h3 style="margin:0 0 3px; font-size:14px;">Cloud / Network Backup Destination</h3>
+            <p style="margin:0; font-size:12px; color:var(--text-muted);">
+                Encrypted backups are copied here after each local backup.
+            </p>
+        </div>
+        {% if cloud_type == 'onedrive' %}
+        <span class="status-badge" style="background:var(--success-dim); color:var(--success); border:1px solid rgba(34,211,165,0.22);">
+            <span style="width:5px;height:5px;border-radius:50%;background:var(--success);display:inline-block;margin-right:5px;"></span>
+            OneDrive Connected
+        </span>
+        {% elif cloud_type == 'custom' %}
+        <span class="status-badge" style="background:var(--info-dim); color:var(--info); border:1px solid rgba(96,165,250,0.22);">
+            <span style="width:5px;height:5px;border-radius:50%;background:var(--info);display:inline-block;margin-right:5px;"></span>
+            Custom Location
+        </span>
+        {% else %}
+        <span class="status-badge" style="background:var(--warning-dim); color:var(--warning); border:1px solid rgba(251,191,36,0.22);">
+            <span style="width:5px;height:5px;border-radius:50%;background:var(--warning);display:inline-block;margin-right:5px;"></span>
+            No Cloud Destination
+        </span>
+        {% endif %}
+    </div>
+
+    {% if cloud_dir %}
+    <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:12px 15px; margin-bottom:16px;">
+        <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:5px;">Current Location</div>
+        <code style="font-size:12.5px; color:var(--text-primary); word-break:break-all;">{{ cloud_dir }}</code>
+    </div>
+    {% else %}
+    <div class="alert alert-warning" data-flash-category="warning" style="margin-bottom:16px; font-size:12.5px;">
+        No cloud backup destination is configured. All backups are currently stored locally only.
+    </div>
+    {% endif %}
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" class="btn" id="openDestModal">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+            </svg>
+            {% if cloud_dir %}Change Backup Location{% else %}Select Backup Location{% endif %}
+        </button>
+
+        {% if cloud_dir %}
+        <button type="button" class="btn btn-secondary" id="testLocationBtn"
+                data-path="{{ cloud_dir }}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            Test Location
+        </button>
+        {% endif %}
+
+        {% if custom_dir_set %}
+        <form method="POST" action="{{ url_for('set_backup_location') }}" id="resetODForm" style="display:inline;">
+            <input type="hidden" name="action" value="clear">
+            <button type="submit" class="btn btn-secondary" style="color:var(--text-muted);">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                    <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
+                </svg>
+                Reset to OneDrive
+            </button>
+        </form>
+        {% endif %}
+    </div>
+
+    {# ── inline test result (injected by JS) ── #}
+    <div id="testResultRow" style="display:none; margin-top:14px; padding:12px 15px; border-radius:var(--r-sm); border:1px solid transparent; font-size:12.5px;"></div>
+
+</div>
+
+{# ── Local backup path ─────────────────────────────────────────── #}
+<div style="display:flex; align-items:center; gap:10px; padding:11px 14px; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); margin-bottom:20px;">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+    </svg>
+    <span style="font-size:11.5px; color:var(--text-muted); font-weight:500; white-space:nowrap;">Local backup folder:</span>
+    <code style="font-size:11.5px; color:var(--text-secondary); word-break:break-all;">{{ local_backup_dir }}</code>
+</div>
+
+{% if usb_due %}
+<div class="alert alert-warning" data-flash-category="warning" style="margin-bottom:18px;">
+    <strong>Offline USB backup required.</strong> Last USB backup was {{ last_usb_date }}. Please connect a USB drive and run a backup.
+</div>
+{% endif %}
+
+{# ── Action buttons ────────────────────────────────────────────── #}
+<div class="card" style="margin-bottom:20px;">
+    <h3 style="margin:0 0 16px; font-size:14px;">Backup Actions</h3>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <form method="POST" action="{{ url_for('backup_create_now') }}">
+            <button type="submit" class="btn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                    <path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4M17 9l-5 5-5-5M12 12.8V2.5"/>
+                </svg>
+                Create Backup Now
+            </button>
+        </form>
+        <a href="{{ url_for('export_compliance_pack') }}" class="btn btn-secondary">Export Compliance Pack</a>
+        <form method="POST" action="{{ url_for('backup_to_usb') }}"
+              onsubmit="return confirm('Copy latest backup to USB drive?');">
+            <button type="submit" class="btn btn-secondary">Backup to USB</button>
+        </form>
+    </div>
+</div>
+
+{# ── Restore ───────────────────────────────────────────────────── #}
+<div class="card">
+    <h3 style="margin:0 0 12px; font-size:14px; color:var(--text-secondary);">Restore from Backup</h3>
+    <div class="alert alert-warning" data-flash-category="warning" style="margin-bottom:14px;">
+        <strong>Warning:</strong> Restoring a backup will permanently replace the current database. All unsaved data will be lost. This action cannot be undone.
+    </div>
+    <form method="POST" action="{{ url_for('restore_backup_route') }}" enctype="multipart/form-data"
+          onsubmit="return confirm('WARNING: This will replace the current database with the backup. All unsaved data will be lost. Continue?');"
+          style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <input type="file" name="backup_file" accept=".zip,.enc" required
+               style="font-size:13px; color:var(--text-secondary);">
+        <button type="submit" class="btn btn-danger-solid">Restore Backup</button>
+    </form>
+    <p style="margin-top:14px; font-size:11.5px; color:var(--text-muted);">
+        For unattended nightly backups, configure Windows Task Scheduler to run <code>run_backup.py</code> at 02:00.
+    </p>
+</div>
+
+
+{# ══════════════════════════════════════════════════════════════════
+   Backup Destination Modal
+   States: intro → browsing → validating → confirm
+   ══════════════════════════════════════════════════════════════════ #}
+<div id="destModal" style="
+    display:none; position:fixed; inset:0; z-index:900;
+    background:rgba(0,0,0,0.60); backdrop-filter:blur(4px);
+    align-items:center; justify-content:center; padding:20px;">
+
+    <div style="
+        background:var(--bg-surface);
+        border:1px solid var(--border-subtle);
+        border-radius:12px;
+        width:100%; max-width:480px;
+        box-shadow:var(--shadow-lg);
+        overflow:hidden;">
+
+        {# ── Modal header ── #}
+        <div style="padding:20px 24px 16px; border-bottom:1px solid var(--border-faint); display:flex; align-items:center; gap:12px;">
+            <div style="width:32px;height:32px;border-radius:7px;background:var(--accent-dim);border:1px solid rgba(99,102,241,0.25);display:flex;align-items:center;justify-content:center;color:var(--accent-hover);flex-shrink:0;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4M17 9l-5 5-5-5M12 12.8V2.5"/>
+                </svg>
+            </div>
+            <div style="flex:1; min-width:0;">
+                <div style="font-weight:600; font-size:0.92rem; color:var(--text-primary);">Backup Destination</div>
+                <div id="modalSubtitle" style="font-size:0.74rem; color:var(--text-muted); margin-top:1px;">
+                    Select where encrypted backup copies should be stored
+                </div>
+            </div>
+            <button type="button" id="modalCloseX" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px;line-height:1;padding:2px 4px;opacity:0.6;" title="Close">&times;</button>
+        </div>
+
+        {# ── State: intro ── #}
+        <div id="stateIntro" style="padding:20px 24px 24px;">
+            <p style="font-size:0.82rem; color:var(--text-secondary); line-height:1.65; margin-bottom:18px;">
+                Select the folder where encrypted backup copies will be stored.
+                Backups are <strong>AES-256 encrypted</strong> before being copied — the chosen destination holds only the encrypted files.
+            </p>
+            {% if cloud_dir %}
+            <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:10px 13px; margin-bottom:18px;">
+                <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px;">Current Location</div>
+                <code style="font-size:12px; color:var(--text-secondary); word-break:break-all;">{{ cloud_dir }}</code>
+            </div>
+            {% endif %}
+            <div style="display:flex; gap:10px;">
+                <button type="button" class="btn btn-primary" id="browseBtn" style="flex:1;">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                        <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+                    </svg>
+                    Browse Folder
+                </button>
+                <button type="button" class="btn" id="introCancel" style="flex:1;">Cancel</button>
+            </div>
+        </div>
+
+        {# ── State: browsing / validating ── #}
+        <div id="stateBrowsing" style="display:none; padding:32px 24px; text-align:center;">
+            <div style="width:36px;height:36px;border-radius:50%;border:2px solid var(--accent);border-top-color:transparent;animation:spin 0.8s linear infinite;margin:0 auto 14px;"></div>
+            <div id="browsingMsg" style="font-size:0.82rem; color:var(--text-secondary);">Opening folder picker…</div>
+        </div>
+
+        {# ── State: confirm ── #}
+        <div id="stateConfirm" style="display:none; padding:20px 24px 24px;">
+            <div style="margin-bottom:16px;">
+                <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:6px;">Selected Location</div>
+                <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--r-sm); padding:10px 13px;">
+                    <code id="confirmPathDisplay" style="font-size:12.5px; color:var(--text-primary); word-break:break-all;"></code>
+                </div>
+            </div>
+
+            <div style="margin-bottom:18px;">
+                <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:8px;">Validation Results</div>
+                <div id="validationList" style="display:flex; flex-direction:column; gap:6px; font-size:12.5px;"></div>
+            </div>
+
+            <form method="POST" action="{{ url_for('set_backup_location') }}" id="confirmSaveForm">
+                <input type="hidden" name="action" value="set">
+                <input type="hidden" name="backup_path" id="confirmPathInput">
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                    <button type="submit" class="btn btn-primary" id="saveLocationBtn" style="flex:1;">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px;">
+                            <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+                        </svg>
+                        Save Location
+                    </button>
+                    <button type="button" class="btn btn-secondary" id="chooseDifferentBtn" style="flex:1;">Choose Different Folder</button>
+                    <button type="button" class="btn" id="confirmCancel">Cancel</button>
+                </div>
+            </form>
+        </div>
+
+    </div>
+</div>
+
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    var PICK_URL     = '{{ url_for("pick_backup_folder") }}';
+    var VALIDATE_URL = '{{ url_for("validate_backup_path") }}';
+
+    /* ── DOM refs ── */
+    var modal          = document.getElementById('destModal');
+    var stateIntro     = document.getElementById('stateIntro');
+    var stateBrowsing  = document.getElementById('stateBrowsing');
+    var stateConfirm   = document.getElementById('stateConfirm');
+    var browsingMsg    = document.getElementById('browsingMsg');
+    var modalSubtitle  = document.getElementById('modalSubtitle');
+    var confirmPathDisplay = document.getElementById('confirmPathDisplay');
+    var confirmPathInput   = document.getElementById('confirmPathInput');
+    var validationList     = document.getElementById('validationList');
+    var saveBtn            = document.getElementById('saveLocationBtn');
+
+    /* ── Modal open / close ── */
+    function openModal() {
+        modal.style.display = 'flex';
+        showState('intro');
+        if (modalSubtitle) modalSubtitle.textContent = 'Select where encrypted backup copies should be stored';
+    }
+    function closeModal() {
+        modal.style.display = 'none';
+    }
+    function showState(name) {
+        stateIntro.style.display    = name === 'intro'    ? 'block' : 'none';
+        stateBrowsing.style.display = name === 'browsing' ? 'block' : 'none';
+        stateConfirm.style.display  = name === 'confirm'  ? 'block' : 'none';
+    }
+
+    document.getElementById('openDestModal').addEventListener('click', openModal);
+    document.getElementById('modalCloseX').addEventListener('click', closeModal);
+    document.getElementById('introCancel').addEventListener('click', closeModal);
+    document.getElementById('confirmCancel').addEventListener('click', closeModal);
+
+    /* Click outside to close */
+    modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && modal.style.display === 'flex') closeModal(); });
+
+    /* ── Validation UI helpers ── */
+    function valRow(ok, text) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:5px; background:' +
+            (ok ? 'var(--success-dim)' : 'var(--danger-dim)') + '; border:1px solid ' +
+            (ok ? 'rgba(34,211,165,0.2)' : 'rgba(248,113,113,0.2)') + ';';
+        row.innerHTML = (ok
+            ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+            : '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>') +
+            '<span style="font-size:12px; color:' + (ok ? 'var(--success)' : 'var(--danger)') + ';">' + text + '</span>';
+        return row;
+    }
+
+    function pendingRow(text) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:5px; background:var(--bg-elevated); border:1px solid var(--border-subtle);';
+        row.innerHTML = '<div style="width:11px;height:11px;border-radius:50%;border:2px solid var(--text-muted);border-top-color:transparent;animation:spin 0.7s linear infinite;flex-shrink:0;"></div>' +
+            '<span style="font-size:12px; color:var(--text-muted);">' + text + '</span>';
+        return row;
+    }
+
+    /* ── Browse flow ── */
+    function doBrowse() {
+        showState('browsing');
+        if (browsingMsg) browsingMsg.textContent = 'Opening folder picker…';
+        if (modalSubtitle) modalSubtitle.textContent = 'Waiting for folder selection…';
+
+        fetch(PICK_URL, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.success || !data.path) {
+                    showState('intro');
+                    if (modalSubtitle) modalSubtitle.textContent = 'Select where encrypted backup copies should be stored';
+                    return;
+                }
+                doValidate(data.path);
+            })
+            .catch(function () { showState('intro'); });
+    }
+
+    function doValidate(path) {
+        if (browsingMsg) browsingMsg.textContent = 'Verifying location…';
+        if (modalSubtitle) modalSubtitle.textContent = 'Checking folder permissions…';
+
+        var body = new URLSearchParams();
+        body.append('path', path);
+
+        fetch(VALIDATE_URL, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: body })
+            .then(function (r) { return r.json(); })
+            .then(function (v) { showConfirm(path, v); })
+            .catch(function () {
+                showConfirm(path, { ok: false, exists: false, writable: false, error: 'Validation request failed.' });
+            });
+    }
+
+    function showConfirm(path, v) {
+        if (confirmPathDisplay) confirmPathDisplay.textContent = path;
+        if (confirmPathInput)   confirmPathInput.value = path;
+        if (modalSubtitle) modalSubtitle.textContent = 'Review selected location';
+
+        validationList.innerHTML = '';
+        validationList.appendChild(valRow(v.exists !== false, 'Folder exists'));
+        validationList.appendChild(valRow(v.writable === true, 'Write access confirmed'));
+        if (v.ok) {
+            validationList.appendChild(valRow(true, 'Ready for backup storage'));
+        } else if (v.error) {
+            var errDiv = document.createElement('div');
+            errDiv.style.cssText = 'font-size:11.5px; color:var(--danger); margin-top:2px; padding:0 2px;';
+            errDiv.textContent = v.error;
+            validationList.appendChild(errDiv);
+        }
+
+        if (saveBtn) saveBtn.disabled = !v.ok;
+        showState('confirm');
+    }
+
+    document.getElementById('browseBtn').addEventListener('click', doBrowse);
+    document.getElementById('chooseDifferentBtn').addEventListener('click', doBrowse);
+
+    /* ── Reset to OneDrive confirmation ── */
+    var resetForm = document.getElementById('resetODForm');
+    if (resetForm) {
+        resetForm.addEventListener('submit', function (e) {
+            if (!confirm('Reset backup destination to automatic OneDrive detection?')) e.preventDefault();
+        });
+    }
+
+    /* ── Test current location ── */
+    var testBtn    = document.getElementById('testLocationBtn');
+    var testResult = document.getElementById('testResultRow');
+
+    if (testBtn && testResult) {
+        testBtn.addEventListener('click', function () {
+            var path = testBtn.getAttribute('data-path');
+            if (!path) return;
+            testBtn.disabled = true;
+            testResult.style.display = 'none';
+
+            var body = new URLSearchParams();
+            body.append('path', path);
+
+            fetch(VALIDATE_URL, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: body })
+                .then(function (r) { return r.json(); })
+                .then(function (v) {
+                    testBtn.disabled = false;
+                    if (v.ok) {
+                        testResult.style.cssText = 'display:flex; align-items:center; gap:8px; margin-top:14px; padding:10px 14px; border-radius:var(--r-sm); background:var(--success-dim); border:1px solid rgba(34,211,165,0.2); font-size:12.5px; color:var(--success);';
+                        testResult.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Folder exists · Write access confirmed · Ready for backup storage';
+                    } else {
+                        testResult.style.cssText = 'display:flex; align-items:center; gap:8px; margin-top:14px; padding:10px 14px; border-radius:var(--r-sm); background:var(--danger-dim); border:1px solid rgba(248,113,113,0.2); font-size:12.5px; color:var(--danger);';
+                        testResult.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> ' + (v.error || 'Validation failed');
+                    }
+                    testResult.style.display = 'flex';
+                    setTimeout(function () { testResult.style.display = 'none'; }, 12000);
+                })
+                .catch(function () { testBtn.disabled = false; });
+        });
+    }
+}());
+</script>
+{% endblock %}

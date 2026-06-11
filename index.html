@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexal Legal – Client Ledger & Cashbook</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header h1 { font-size: 24px; margin-bottom: 5px; }
+        .header p { opacity: 0.9; font-size: 14px; }
+        .nav {
+            background: white;
+            padding: 0;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            display: flex;
+        }
+        .nav button {
+            padding: 15px 25px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-weight: 500;
+            color: #555;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+        .nav button:hover { background: #f8f9fa; color: #667eea; }
+        .nav button.active { border-bottom-color: #667eea; color: #667eea; }
+        .container {
+            max-width: 1400px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            margin-bottom: 20px;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+            transition: background 0.3s;
+            margin-right: 10px;
+        }
+        .btn:hover { background: #5568d3; }
+        .btn-secondary { background: #6c757d; }
+        .btn-secondary:hover { background: #5a6268; }
+        .btn-success { background: #28a745; }
+        .btn-success:hover { background: #218838; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .alert {
+            padding: 12px 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .alert.show { display: block; }
+        .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #495057;
+        }
+        tr:hover { background: #f8f9fa; }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #495057;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-cleared { background: #d4edda; color: #155724; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-declined { background: #f8d7da; color: #721c24; }
+        .amount-positive { color: #28a745; font-weight: 600; }
+        .amount-negative { color: #dc3545; font-weight: 600; }
+        .month-tab {
+            padding: 10px 20px;
+            background: #f8f9fa;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px 5px 0 0;
+            font-weight: 500;
+            color: #555;
+            white-space: nowrap;
+            transition: all 0.3s;
+        }
+        .month-tab:hover { background: #e9ecef; }
+        .month-tab.active {
+            background: #667eea;
+            color: white;
+            border-bottom: 3px solid #667eea;
+        }
+        .transaction-id {
+            font-family: monospace;
+            font-size: 11px;
+            color: #666;
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .page { display: none; }
+        .page.active { display: block; }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal.show { display: flex; }
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Nexal Legal – Client Ledger & Cashbook</h1>
+        <p>SRA Compliance Mode Active</p>
+    </div>
+    
+    <nav class="nav">
+        <button onclick="showPage('ledger')" class="active" id="nav-ledger">Client Ledger</button>
+        <button onclick="showPage('cashbook')" id="nav-cashbook">Cashbook</button>
+        <button onclick="showPage('reconciliation')" id="nav-reconciliation">Reconciliation</button>
+        <button onclick="showPage('reports')" id="nav-reports">Reports</button>
+    </nav>
+    
+    <div class="container">
+        <div id="alert-container"></div>
+        
+        <!-- Client Ledger Page -->
+        <div id="page-ledger" class="page active">
+            <div class="card">
+                <h2>Client Ledger</h2>
+                <div style="margin: 20px 0;">
+                    <button class="btn" onclick="showModal('modal-new-client')">New Client</button>
+                    <button class="btn btn-success" onclick="showModal('modal-new-transaction')">New Transaction</button>
+                </div>
+                
+                <div class="form-group" style="max-width: 400px;">
+                    <label>Select Client:</label>
+                    <select id="client-select" onchange="loadClientLedger(this.value)">
+                        <option value="">-- Select Client --</option>
+                    </select>
+                </div>
+                
+                <div id="client-info" style="display: none; background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <strong>Client:</strong> <span id="client-name"></span><br>
+                    <strong style="font-size: 18px; color: #667eea;">Current Balance: £<span id="client-balance">0.00</span></strong>
+                </div>
+                
+                <table id="ledger-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Reference</th>
+                            <th>Source</th>
+                            <th>Status</th>
+                            <th>Description</th>
+                            <th>Balance</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ledger-tbody">
+                        <tr><td colspan="9" style="text-align: center; color: #999;">Select a client to view ledger</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Cashbook Page -->
+        <div id="page-cashbook" class="page">
+            <div class="card">
+                <h2>Client Money Cashbook</h2>
+                <div style="margin: 20px 0;">
+                    <button class="btn" onclick="showModal('modal-new-cashbook')">New Transaction</button>
+                </div>
+                
+                <!-- Month Selector Tabs -->
+                <div id="month-selector" style="margin: 20px 0; border-bottom: 2px solid #ddd; display: flex; gap: 5px; overflow-x: auto;">
+                    <button class="month-tab-btn" onclick="changeMonth(-1)" style="padding: 10px 15px; background: #f8f9fa; border: none; cursor: pointer; border-radius: 5px 5px 0 0;">◀</button>
+                    <div id="month-tabs" style="display: flex; gap: 5px; flex: 1;"></div>
+                    <button class="month-tab-btn" onclick="changeMonth(1)" style="padding: 10px 15px; background: #f8f9fa; border: none; cursor: pointer; border-radius: 5px 5px 0 0;">▶</button>
+                </div>
+                
+                <!-- Opening Balance Display -->
+                <div id="opening-balance-display" style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #ffc107;">
+                    <strong>Opening Balance (<span id="selected-month-name"></span>):</strong>
+                    <span style="font-size: 20px; color: #856404; font-weight: bold; margin-left: 10px;">£<span id="opening-balance">0.00</span></span>
+                    <span style="color: #666; font-size: 12px; margin-left: 10px;">(Read-only - Calculated from previous month)</span>
+                </div>
+                
+                <div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                    <div>
+                        <strong>Bank Balance (Cleared):</strong><br>
+                        <span style="font-size: 20px; color: #667eea;">£<span id="bank-balance">0.00</span></span>
+                    </div>
+                    <div>
+                        <strong>Pending Amount:</strong><br>
+                        <span style="font-size: 20px; color: #ff9800;">£<span id="pending-amount">0.00</span></span>
+                    </div>
+                </div>
+                
+                <table id="cashbook-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Reference</th>
+                            <th>Source</th>
+                            <th>Status</th>
+                            <th>Client</th>
+                            <th>Balance</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cashbook-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Reconciliation Page -->
+        <div id="page-reconciliation" class="page">
+            <div class="card">
+                <h2>Monthly Reconciliation</h2>
+                <p style="margin: 20px 0; color: #666;">
+                    SRA-compliant monthly reconciliation comparing client ledger totals, cashbook cleared balance, and bank statement balance.
+                </p>
+                <button class="btn" onclick="showModal('modal-reconciliation')">New Reconciliation</button>
+                
+                <div id="reconciliation-list" style="margin-top: 30px;">
+                    <h3>Reconciliation History</h3>
+                    <table id="reconciliation-table" style="margin-top: 15px;">
+                        <thead>
+                            <tr>
+                                <th>Month/Year</th>
+                                <th>Ledger Total</th>
+                                <th>Cashbook Total</th>
+                                <th>Bank Balance</th>
+                                <th>Variance</th>
+                                <th>Status</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody id="reconciliation-tbody">
+                            <tr><td colspan="7" style="text-align: center; color: #999;">No reconciliations yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Reports Page -->
+        <div id="page-reports" class="page">
+            <div class="card">
+                <h2>Reports & Exports</h2>
+                <p style="margin: 20px 0; color: #666;">
+                    Export Client Ledger and Cashbook data to CSV or PDF format with date range filtering.
+                </p>
+                
+                <!-- Client Ledger Reports -->
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-bottom: 15px;">Client Ledger Report</h3>
+                    <div class="form-group">
+                        <label>Client:</label>
+                        <select id="report-client" style="max-width: 400px;">
+                            <option value="">All Clients</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Date Range Preset:</label>
+                        <select id="ledger-preset" onchange="setLedgerDatePreset(this.value)" style="max-width: 200px;">
+                            <option value="custom">Custom Range</option>
+                            <option value="this-month">This Month</option>
+                            <option value="last-month">Last Month</option>
+                            <option value="this-year">This Year</option>
+                        </select>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label>From Date:</label>
+                            <input type="date" id="ledger-from-date">
+                        </div>
+                        <div class="form-group" style="margin: 0;">
+                            <label>To Date:</label>
+                            <input type="date" id="ledger-to-date">
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn" onclick="exportLedgerCSV()">Export to CSV</button>
+                        <button class="btn btn-secondary" onclick="exportLedgerPDF()">Export to PDF</button>
+                    </div>
+                </div>
+                
+                <!-- Cashbook Reports -->
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-bottom: 15px;">Cashbook Report</h3>
+                    <div class="form-group">
+                        <label>Date Range Preset:</label>
+                        <select id="cashbook-preset" onchange="setCashbookDatePreset(this.value)" style="max-width: 200px;">
+                            <option value="custom">Custom Range</option>
+                            <option value="this-month">This Month</option>
+                            <option value="last-month">Last Month</option>
+                            <option value="this-year">This Year</option>
+                        </select>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label>From Date:</label>
+                            <input type="date" id="cashbook-from-date">
+                        </div>
+                        <div class="form-group" style="margin: 0;">
+                            <label>To Date:</label>
+                            <input type="date" id="cashbook-to-date">
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn" onclick="exportCashbookCSV()">Export to CSV</button>
+                        <button class="btn btn-secondary" onclick="exportCashbookPDF()">Export to PDF</button>
+                    </div>
+                </div>
+                
+                <!-- SRA Compliance Documentation -->
+                <div style="background: #e7f3ff; padding: 20px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #667eea;">
+                    <h3 style="margin-bottom: 15px;">SRA Compliance Documentation</h3>
+                    <p style="margin-bottom: 15px; color: #666;">
+                        Generate comprehensive SRA Accounts Rules 2019 compliance documentation in PDF format. This document details how the system meets all SRA requirements.
+                    </p>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn btn-success" onclick="exportSRACompliancePDF()">Export SRA Compliance PDF</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modals -->
+    <div id="modal-new-client" class="modal">
+        <div class="modal-content">
+            <h2>New Client</h2>
+            <form onsubmit="createClient(event)">
+                <div class="form-group">
+                    <label>Client Code *</label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="text" id="client-code" readonly style="background: #f8f9fa; cursor: not-allowed;" required>
+                        <button type="button" class="btn btn-secondary" onclick="generateClientCode()" style="white-space: nowrap;">Generate Code</button>
+                    </div>
+                    <small style="color: #666; margin-top: 5px; display: block;">
+                        Client code is auto-generated and immutable for SRA compliance
+                    </small>
+                </div>
+                <div class="form-group">
+                    <label>Client Name *</label>
+                    <input type="text" id="client-name-input" required maxlength="200">
+                </div>
+                <div class="form-group">
+                    <label>Matter Reference</label>
+                    <input type="text" id="matter-ref" maxlength="50">
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <textarea id="client-desc"></textarea>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="submit" class="btn">Create Client</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modal-new-client')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <div id="modal-new-transaction" class="modal">
+        <div class="modal-content">
+            <h2>New Transaction</h2>
+            <form onsubmit="createTransaction(event)">
+                <div class="form-group">
+                    <label>Client *</label>
+                    <select id="trans-client" required></select>
+                </div>
+                <div class="form-group">
+                    <label>Transaction Type *</label>
+                    <select id="trans-type" required>
+                        <option value="Receipt">Receipt</option>
+                        <option value="Payment">Payment</option>
+                        <option value="Transfer">Transfer</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Date *</label>
+                    <input type="date" id="trans-date" required>
+                </div>
+                <div class="form-group">
+                    <label>Amount *</label>
+                    <input type="number" id="trans-amount" step="0.01" min="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label>Reference *</label>
+                    <input type="text" id="trans-ref" required maxlength="100">
+                </div>
+                <div class="form-group">
+                    <label>Source *</label>
+                    <select id="trans-source" required>
+                        <option value="Cash">Cash</option>
+                        <option value="Cheque">Cheque</option>
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="Card">Card</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <textarea id="trans-desc"></textarea>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="submit" class="btn">Create Transaction</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modal-new-transaction')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <div id="modal-new-cashbook" class="modal">
+        <div class="modal-content">
+            <h2>New Cashbook Transaction</h2>
+            <form onsubmit="createCashbookTransaction(event)">
+                <div class="form-group">
+                    <label>Client / Ledger *</label>
+                    <select id="cashbook-client" required>
+                        <option value="">-- Select Client or Standalone --</option>
+                        <option value="standalone">Standalone / Unallocated</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Transaction Type *</label>
+                    <select id="cashbook-type" required>
+                        <option value="Receipt">Receipt</option>
+                        <option value="Payment">Payment</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Date *</label>
+                    <input type="date" id="cashbook-date" required>
+                </div>
+                <div class="form-group">
+                    <label>Amount *</label>
+                    <input type="number" id="cashbook-amount" step="0.01" min="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label>Reference *</label>
+                    <input type="text" id="cashbook-ref" required maxlength="100">
+                </div>
+                <div class="form-group">
+                    <label>Source *</label>
+                    <select id="cashbook-source" required onchange="updateCashbookSourceStatus(this.value)">
+                        <option value="Cash">Cash</option>
+                        <option value="Cheque">Cheque</option>
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="Card">Card</option>
+                    </select>
+                    <small id="cashbook-status-note" style="color: #666; margin-top: 5px; display: block;"></small>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <textarea id="cashbook-desc"></textarea>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="submit" class="btn">Create Transaction</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modal-new-cashbook')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Reconciliation Modal -->
+    <div id="modal-reconciliation" class="modal">
+        <div class="modal-content">
+            <h2>New Monthly Reconciliation</h2>
+            <form onsubmit="createReconciliation(event)">
+                <div class="form-group">
+                    <label>Month *</label>
+                    <select id="rec-month" required>
+                        <option value="1">January</option>
+                        <option value="2">February</option>
+                        <option value="3">March</option>
+                        <option value="4">April</option>
+                        <option value="5">May</option>
+                        <option value="6">June</option>
+                        <option value="7">July</option>
+                        <option value="8">August</option>
+                        <option value="9">September</option>
+                        <option value="10">October</option>
+                        <option value="11">November</option>
+                        <option value="12">December</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Year *</label>
+                    <input type="number" id="rec-year" min="2020" max="2100" required>
+                </div>
+                <div class="form-group">
+                    <label>Bank Statement Balance *</label>
+                    <input type="number" id="rec-bank-balance" step="0.01" required>
+                </div>
+                
+                <div style="background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                    <h4 style="margin-bottom: 10px;">Calculated Totals (as of last day of month):</h4>
+                    <div style="margin-bottom: 8px;">
+                        <strong>Total Client Ledger Balance:</strong>
+                        <span id="rec-ledger-total" style="float: right; font-weight: bold;">£0.00</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <strong>Cashbook Cleared Balance:</strong>
+                        <span id="rec-cashbook-total" style="float: right; font-weight: bold;">£0.00</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <strong>Bank Statement Balance:</strong>
+                        <span id="rec-bank-display" style="float: right; font-weight: bold;">£0.00</span>
+                    </div>
+                    <hr style="margin: 10px 0;">
+                    <div style="margin-bottom: 8px;">
+                        <strong>Variance (Cashbook - Bank):</strong>
+                        <span id="rec-variance" style="float: right; font-weight: bold; color: #dc3545;">£0.00</span>
+                    </div>
+                    <div id="rec-status" style="margin-top: 10px; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold;"></div>
+                </div>
+                
+                <div id="rec-pending-items" style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; display: none;">
+                    <h4 style="margin-bottom: 10px;">Pending Items (Not Included in Balance):</h4>
+                    <div id="rec-pending-list"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Notes</label>
+                    <textarea id="rec-notes" rows="3"></textarea>
+                </div>
+                
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" class="btn" onclick="calculateReconciliation()">Recalculate</button>
+                    <button type="submit" class="btn btn-success">Save Reconciliation</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modal-reconciliation')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block page_title %}Admin Security{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="margin:0 0 5px;">Admin Security</h2>
+    <p style="margin:0 0 28px; color:var(--text-secondary); font-size:13.5px;">Manage admin recovery key and security settings.</p>
+
+    <h3 style="margin:0 0 8px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted);">Admin Recovery Key Management</h3>
+    <p style="margin:0 0 20px; color:var(--text-secondary); font-size:13.5px; line-height:1.6; max-width:620px;">
+        The recovery key allows administrator password recovery if an admin forgets their password.
+        Generating a new key immediately invalidates the previous one — store the new key securely offline before dismissing the dialog.
+    </p>
+
+    {% if recovery_confirm_locked %}
+    <div class="alert alert-error" style="margin-bottom:18px;">Account temporarily locked. Please try again in {{ recovery_confirm_remaining }}.</div>
+    <button type="button" class="btn" id="btn-generate-key" disabled>Generate New Recovery Key</button>
+    {% else %}
+    <button type="button" class="btn" id="btn-generate-key">Generate New Recovery Key</button>
+    {% endif %}
+</div>
+
+
+<!-- ── Modal 1: Confirm password ───────────────────────────────── -->
+<div id="modal-password" style="display:none; position:fixed; inset:0; z-index:9000; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px);">
+    <div style="background:var(--bg-surface); border:1px solid var(--border-default); border-radius:12px; padding:28px 30px; max-width:440px; width:92%; box-shadow:0 24px 64px rgba(0,0,0,0.6);">
+        <h3 style="margin:0 0 8px; font-size:16px; color:var(--text-primary);">Confirm your password</h3>
+        <p style="color:var(--text-secondary); font-size:13px; margin-bottom:20px; line-height:1.55;">
+            Re-enter your admin password to generate a new recovery key.
+            The previous key will no longer work after this action.
+        </p>
+        <form method="POST" action="{{ url_for('admin_generate_recovery_key') }}">
+            <div class="form-group">
+                <label>Admin Password</label>
+                <input type="password" name="password" required autocomplete="current-password" placeholder="Enter your current password">
+            </div>
+            <div style="display:flex; gap:10px; margin-top:20px; justify-content:flex-end;">
+                <button type="button" class="btn btn-secondary" id="btn-cancel-password">Cancel</button>
+                <button type="submit" class="btn">Generate New Key</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+
+<!-- ── Modal 2: Display recovery key (one-time) ────────────────── -->
+<div id="modal-recovery-key" style="{% if not pending_recovery_key %}display:none;{% endif %} position:fixed; inset:0; z-index:9001; align-items:center; justify-content:center; background:rgba(0,0,0,0.8); backdrop-filter:blur(6px);">
+    <div style="background:var(--bg-surface); border:1px solid var(--border-default); border-radius:12px; padding:30px 32px; max-width:500px; width:92%; box-shadow:0 24px 64px rgba(0,0,0,0.7);">
+
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+            <div style="width:36px; height:36px; background:var(--warning-dim); border:1px solid rgba(251,191,36,0.25); border-radius:8px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                </svg>
+            </div>
+            <div>
+                <div style="font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--warning);">IMPORTANT — SAVE THIS RECOVERY KEY</div>
+            </div>
+        </div>
+
+        <p style="color:var(--text-secondary); font-size:13.5px; margin-bottom:8px; line-height:1.55;">
+            This key will <strong style="color:var(--text-primary);">not</strong> be shown again.
+            Store it securely offline — print it, write it down, or keep it in a password manager.
+        </p>
+        <p style="color:var(--text-secondary); font-size:13px; margin-bottom:20px; line-height:1.55;">
+            Use it on the <a href="{{ url_for('admin_recovery') }}" style="color:var(--accent-hover);">Admin Recovery</a> page if an admin forgets their password.
+        </p>
+
+        <!-- Recovery key display -->
+        <div style="background:var(--bg-elevated); border:1px solid rgba(251,191,36,0.3); border-radius:8px; padding:20px; margin-bottom:20px; text-align:center;">
+            <div style="font-family:var(--font-mono); font-size:19px; font-weight:700; color:var(--warning); letter-spacing:2px; word-break:break-all;">{{ pending_recovery_key or '' }}</div>
+        </div>
+
+        <form method="POST" action="{{ url_for('admin_recovery_key_ack') }}" id="form-ack">
+            <label style="display:flex; align-items:center; gap:10px; margin-bottom:18px; cursor:pointer; font-size:13.5px; color:var(--text-secondary);">
+                <input type="checkbox" id="cb-saved" required style="width:auto; accent-color:var(--accent);">
+                <span>I have securely saved this recovery key</span>
+            </label>
+            <button type="submit" id="btn-continue" class="btn btn-success" disabled style="width:100%; padding:11px; font-size:14px;">
+                Continue
+            </button>
+        </form>
+    </div>
+</div>
+
+
+<script>
+(function() {
+    var btnGenerate   = document.getElementById('btn-generate-key');
+    var modalPassword = document.getElementById('modal-password');
+    var btnCancel     = document.getElementById('btn-cancel-password');
+    var modalRecovery = document.getElementById('modal-recovery-key');
+    var cbSaved       = document.getElementById('cb-saved');
+    var btnContinue   = document.getElementById('btn-continue');
+
+    if (btnGenerate) {
+        btnGenerate.addEventListener('click', function() { modalPassword.style.display = 'flex'; });
+    }
+    if (btnCancel) {
+        btnCancel.addEventListener('click', function() { modalPassword.style.display = 'none'; });
+    }
+    /* Show recovery key modal if pending key present */
+    if (modalRecovery && modalRecovery.style.display !== 'none') {
+        modalRecovery.style.display = 'flex';
+    }
+    if (cbSaved && btnContinue) {
+        cbSaved.addEventListener('change', function() { btnContinue.disabled = !cbSaved.checked; });
+    }
+    /* Close password modal on overlay click */
+    if (modalPassword) {
+        modalPassword.addEventListener('click', function(e) {
+            if (e.target === modalPassword) modalPassword.style.display = 'none';
+        });
+    }
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            if (modalPassword) modalPassword.style.display = 'none';
+        }
+    });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block page_title %}Reset January 2026{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Reset January 2026 (Client Money)</h2>
+
+    <div class="alert alert-warning" style="margin-bottom:20px;">
+        <strong>Warning — Soft Reset:</strong>
+        This performs a <strong>soft reset</strong> of January 2026 dated activity.
+        January ledger, cashbook, office, reconciliation, and month-dated audit rows are flagged as excluded
+        (not physically deleted), so January is hidden from normal operations while preserving forensic history.
+        <strong>November and December 2025 are not modified</strong> (they must be locked).
+    </div>
+
+    <ul style="margin:0 0 20px; padding-left:20px; color:var(--text-secondary); font-size:13.5px; line-height:1.8;">
+        <li>January 2026 must <strong>not</strong> be locked.</li>
+        <li>November and December 2025 must be <strong>locked</strong>.</li>
+        <li>Environment variable <code>ALLOW_JANUARY_RESET=true</code> must be set on the server.</li>
+        <li>After reset, totals must equal <strong>£{{ "{:,.2f}".format(expected_balance) }}</strong> (December closing) or the operation rolls back.</li>
+        <li>Rows are retained with an internal deletion flag for audit integrity.</li>
+    </ul>
+
+    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:24px; font-size:13.5px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="color:var(--text-muted);">January 2026 locked:</span>
+            <span class="status-badge {% if jan_locked %}status-declined{% else %}status-open{% endif %}">
+                {{ 'Yes — reset blocked' if jan_locked else 'No — eligible if other checks pass' }}
+            </span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="color:var(--text-muted);">November 2025 locked:</span>
+            <span class="status-badge {% if lock_nov %}status-cleared{% else %}status-declined{% endif %}">{{ 'Yes' if lock_nov else 'No' }}</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="color:var(--text-muted);">December 2025 locked:</span>
+            <span class="status-badge {% if lock_dec %}status-cleared{% else %}status-declined{% endif %}">{{ 'Yes' if lock_dec else 'No' }}</span>
+        </div>
+    </div>
+
+    <div style="display:flex; gap:10px;">
+        <button type="button" class="btn btn-danger-solid" id="openResetModal">Reset January 2026…</button>
+        <a href="{{ url_for('system_health') }}" class="btn btn-secondary">Back to System Health</a>
+    </div>
+</div>
+
+<!-- Dark modal overlay -->
+<div id="resetModal" style="display:none; position:fixed; inset:0; z-index:9000; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px);">
+    <div style="background:var(--bg-surface); border:1px solid var(--border-default); border-radius:12px; padding:28px 30px; max-width:480px; width:92%; box-shadow:0 24px 64px rgba(0,0,0,0.6);">
+        <h3 style="margin:0 0 10px; font-size:16px; color:var(--text-primary);">Confirm January Reset</h3>
+        <p style="color:var(--text-secondary); font-size:13.5px; margin-bottom:18px;">
+            Type <strong style="color:var(--danger);">RESET JANUARY</strong> to confirm. This cannot be undone.
+        </p>
+        <form method="POST" action="{{ url_for('admin_reset_january') }}">
+            <div class="form-group">
+                <label>Confirmation phrase</label>
+                <input type="text" name="confirm_phrase" id="confirm_phrase" autocomplete="off"
+                       placeholder="Type RESET JANUARY" required>
+            </div>
+            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
+                <button type="button" class="btn btn-secondary" id="closeResetModal">Cancel</button>
+                <button type="submit" class="btn btn-danger-solid">Execute Reset</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+(function() {
+    var modal = document.getElementById('resetModal');
+    document.getElementById('openResetModal').addEventListener('click', function() {
+        modal.style.display = 'flex';
+        document.getElementById('confirm_phrase').value = '';
+        setTimeout(function() { document.getElementById('confirm_phrase').focus(); }, 50);
+    });
+    document.getElementById('closeResetModal').addEventListener('click', function() { modal.style.display = 'none'; });
+    modal.addEventListener('click', function(e) { if (e.target === modal) modal.style.display = 'none'; });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') modal.style.display = 'none'; });
+})();
+</script>
+{% endblock %}
