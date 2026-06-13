@@ -209,6 +209,17 @@ class PlatformDatabase:
         finally:
             conn.close()
 
+    def get_firm_by_portal_firm_id(self, portal_firm_id: str) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM firms WHERE portal_firm_id = ?",
+                (portal_firm_id,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
     def get_workspace_for_firm(self, firm_id: str) -> Dict[str, Any]:
         conn = self.get_connection()
         try:

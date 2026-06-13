@@ -608,6 +608,10 @@ class Database:
                 ('admin_recovery_confirm_lockout_level', 'INTEGER DEFAULT 0'),
                 ('name', 'TEXT'),
                 ('temporary_password', 'INTEGER DEFAULT 0'),
+                ('portal_user_id', 'TEXT'),
+                ('email', 'TEXT'),
+                ('firm_id', 'TEXT'),
+                ('portal_role', 'TEXT'),
             ]
             for col_name, col_def in columns_to_add:
                 if col_name not in existing:

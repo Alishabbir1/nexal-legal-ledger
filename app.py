@@ -80,14 +80,38 @@ app = Flask(__name__, template_folder=_template_dir, static_folder=_static_dir)
 app.secret_key = 'sra-compliant-secret-key-change-in-production'
 app.config['PERMANENT_SESSION_LIFETIME'] = 900  # 15 minutes inactivity
 
-# Initialize database
-db = Database()
-db.initialize_security_columns()
+# Legacy default database (single-tenant / pre-SSO)
+_legacy_db = Database()
+_legacy_db.initialize_security_columns()
+
+
+def _resolve_active_db():
+    """Route database access to firm tenant DB for SSO sessions."""
+    from flask import g, has_request_context, session
+    if not has_request_context():
+        return _legacy_db
+    cached = getattr(g, "_nexal_active_db", None)
+    if cached is not None:
+        return cached
+    firm_id = session.get("firm_id")
+    if firm_id and session.get("sso_login"):
+        from db_router import get_db_for_firm
+        g._nexal_active_db = get_db_for_firm(firm_id)
+        return g._nexal_active_db
+    return _legacy_db
+
+
+class _ActiveDatabaseProxy:
+    def __getattr__(self, item):
+        return getattr(_resolve_active_db(), item)
+
+
+db = _ActiveDatabaseProxy()
 
 # Start in-process fallback scheduler (fires at 03:00 if Task Scheduler is absent)
 try:
     from backup_scheduler import start_backup_scheduler
-    start_backup_scheduler(db)
+    start_backup_scheduler(_legacy_db)
 except Exception:
     pass
 
@@ -97,7 +121,7 @@ try:
 
     def _task_audit(action, details):
         try:
-            db.insert_audit_log('System', 'admin', action, 'Backup System', None, details)
+            _legacy_db.insert_audit_log('System', 'admin', action, 'Backup System', None, details)
         except Exception:
             pass
 
@@ -105,7 +129,13 @@ try:
 except Exception:
     pass
 
-LOGIN_EXEMPT_ENDPOINTS = {'login', 'static', 'admin_recovery', 'admin_recovery_reset', 'reset_password', 'admin_reset_password_page'}
+from firm_middleware import register_sso_routes
+register_sso_routes(app)
+
+LOGIN_EXEMPT_ENDPOINTS = {
+    'login', 'static', 'admin_recovery', 'admin_recovery_reset', 'reset_password',
+    'admin_reset_password_page', 'sso_login', 'api_sso_login', 'sso_status', 'sso_logout',
+}
 
 
 def get_dashboard_alerts(session_obj, database) -> list:
