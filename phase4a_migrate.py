@@ -1,209 +1,125 @@
+#!/usr/bin/env python3
 """
-Nexal Legal – Phase 4A: Role Foundation Migration
-===================================================
-Adds Phase 4A multi-tenant columns to the existing 'users' table
-in every firm's solicitor_ledger.db (and the legacy single-tenant DB).
+Phase 4A migration — register legacy single-tenant solicitor_ledger.db as a firm workspace.
 
-New columns added to 'users':
-  - firm_id        TEXT  : Links user to a firm (NULL = legacy / no-firm)
-  - email          TEXT  : User's email address (for SSO readiness)
-  - portal_user_id TEXT  : Portal UUID – future SSO bridge (Phase 4B)
-
-Role CHECK constraint is EXPANDED to include:
-  admin | staff | firm_admin | cashier | read_only
-
-BACKWARDS COMPATIBILITY:
-  - All existing 'admin' and 'staff' users are untouched.
-  - New columns are nullable – existing records get NULL values.
-  - The CHECK on 'role' is relaxed at DB level via trigger / view
-    (SQLite cannot ALTER CHECK constraints; we document this and
-    handle enforcement in the application layer instead).
-  - Existing login flow is completely unchanged.
-
-Usage (run once on VPS after deploying Phase 4A code):
-    python phase4a_migrate.py
+Non-destructive by default: copies the legacy database into the tenant layout.
+The original database file is never modified or deleted unless --move is passed.
 """
+from __future__ import annotations
 
-import sqlite3
+import argparse
 import os
+import shutil
 import sys
-import glob
-import logging
-from datetime import datetime
 
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s %(levelname)s %(message)s')
-logger = logging.getLogger(__name__)
+from database import Database, _default_db_path
 
-# ---------------------------------------------------------------------------
-# Role definition for Phase 4A
-# ---------------------------------------------------------------------------
-
-PHASE4A_ROLES = ('admin', 'staff', 'firm_admin', 'cashier', 'read_only')
-
-# ---------------------------------------------------------------------------
-# Column definitions to add
-# ---------------------------------------------------------------------------
-
-COLUMNS_TO_ADD = [
-    ("firm_id",        "TEXT",  None),
-    ("email",          "TEXT",  None),
-    ("portal_user_id", "TEXT",  None),
-]
+from nexal_platform.config import get_platform_paths
+from nexal_platform.platform_db import PlatformDatabase
+from nexal_platform.template import ensure_template_database
 
 
-# ---------------------------------------------------------------------------
-# Migration helpers
-# ---------------------------------------------------------------------------
-
-def _get_existing_columns(cursor, table_name: str) -> list:
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    return [row[1] for row in cursor.fetchall()]
-
-
-def migrate_db(db_path: str) -> dict:
+def migrate_legacy_database(
+    legacy_path: str | None = None,
+    firm_name: str = "Legacy Firm",
+    firm_code: str = "FIRM000",
+    slug: str = "legacy",
+    owner_email: str | None = None,
+    move: bool = False,
+) -> dict:
     """
-    Apply Phase 4A schema changes to a single solicitor_ledger.db.
+    Migrate an existing single-tenant ledger database into the Phase 4A layout.
 
-    Returns a dict with:
-        db_path, columns_added, status, message
+    Returns workspace registration details.
     """
-    result = {
-        "db_path": db_path,
-        "columns_added": [],
-        "status": "ok",
-        "message": ""
+    paths = get_platform_paths()
+    platform = PlatformDatabase(paths)
+    ensure_template_database(paths)
+
+    legacy_path = os.path.abspath(legacy_path or _default_db_path())
+    if not os.path.isfile(legacy_path):
+        raise FileNotFoundError(f"Legacy database not found: {legacy_path}")
+
+    if platform.get_firm_by_code(firm_code):
+        firm = platform.get_firm_by_code(firm_code)
+        workspace = platform.get_workspace_for_firm(firm["id"])
+        return {
+            "status": "already_migrated",
+            "firm": firm,
+            "workspace": workspace,
+            "legacy_path": legacy_path,
+        }
+
+    firm = platform.create_firm(name=firm_name, slug=slug, firm_code=firm_code)
+    firm_id = firm["id"]
+    tenant_db_path = paths.tenant_db_path(firm_id)
+    os.makedirs(os.path.dirname(tenant_db_path), exist_ok=True)
+
+    if move:
+        shutil.move(legacy_path, tenant_db_path)
+    else:
+        shutil.copy2(legacy_path, tenant_db_path)
+
+    Database(db_path=tenant_db_path)
+    workspace = platform.create_workspace(firm_id=firm_id, database_path=tenant_db_path)
+
+    user = None
+    if owner_email:
+        user = platform.create_user(
+            firm_id=firm_id,
+            email=owner_email,
+            portal_user_id=None,
+        )
+
+    return {
+        "status": "migrated",
+        "firm": firm,
+        "workspace": workspace,
+        "user": user,
+        "legacy_path": legacy_path,
+        "tenant_database_path": tenant_db_path,
+        "move": move,
     }
 
-    if not os.path.exists(db_path):
-        result["status"] = "skip"
-        result["message"] = "File not found"
-        return result
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Migrate legacy Nexal Legal ledger database into Phase 4A multi-tenant layout."
+    )
+    parser.add_argument("--legacy-path", help="Path to existing solicitor_ledger.db")
+    parser.add_argument("--firm-name", default="Legacy Firm")
+    parser.add_argument("--firm-code", default="FIRM000")
+    parser.add_argument("--slug", default="legacy")
+    parser.add_argument("--owner-email")
+    parser.add_argument(
+        "--move",
+        action="store_true",
+        help="Move legacy database instead of copying (destructive to original path).",
+    )
+    args = parser.parse_args()
 
     try:
-        conn = sqlite3.connect(db_path, timeout=30)
-        conn.execute("PRAGMA foreign_keys=ON")
-        cursor = conn.cursor()
-
-        # Check table exists
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+        result = migrate_legacy_database(
+            legacy_path=args.legacy_path,
+            firm_name=args.firm_name,
+            firm_code=args.firm_code,
+            slug=args.slug,
+            owner_email=args.owner_email,
+            move=args.move,
         )
-        if not cursor.fetchone():
-            result["status"] = "skip"
-            result["message"] = "No 'users' table found – not a ledger DB"
-            conn.close()
-            return result
-
-        existing = _get_existing_columns(cursor, "users")
-
-        for col_name, col_type, col_default in COLUMNS_TO_ADD:
-            if col_name not in existing:
-                if col_default is not None:
-                    ddl = (f"ALTER TABLE users ADD COLUMN {col_name} "
-                           f"{col_type} DEFAULT '{col_default}'")
-                else:
-                    ddl = f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"
-                cursor.execute(ddl)
-                result["columns_added"].append(col_name)
-                logger.info("  Added column '%s' to users in %s",
-                            col_name, db_path)
-
-        conn.commit()
-        conn.close()
-
-        if result["columns_added"]:
-            result["message"] = (
-                f"Added columns: {', '.join(result['columns_added'])}"
-            )
-        else:
-            result["message"] = "All columns already present – no changes needed"
-
     except Exception as exc:
-        result["status"] = "error"
-        result["message"] = str(exc)
-        logger.error("Migration failed for %s: %s", db_path, exc)
+        print(f"Migration failed: {exc}", file=sys.stderr)
+        return 1
 
-    return result
-
-
-def run_migration(data_root: str = None) -> list:
-    """
-    Discover and migrate all solicitor_ledger.db files under data_root.
-
-    Searches:
-      <data_root>/solicitor_ledger.db          (legacy single-tenant DB)
-      <data_root>/firms/*/solicitor_ledger.db  (per-firm DBs)
-      <data_root>/template/solicitor_ledger.db (template DB)
-
-    Returns list of migration result dicts.
-    """
-    if data_root is None:
-        data_root = os.environ.get(
-            "NEXAL_DATA_DIR",
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-        )
-
-    # Also check the root directory of the project (legacy single-tenant)
-    project_root = os.path.dirname(os.path.abspath(__file__))
-
-    patterns = [
-        os.path.join(project_root, "solicitor_ledger.db"),
-        os.path.join(data_root, "solicitor_ledger.db"),
-        os.path.join(data_root, "template", "solicitor_ledger.db"),
-        os.path.join(data_root, "firms", "*", "solicitor_ledger.db"),
-    ]
-
-    db_paths = set()
-    for pattern in patterns:
-        for path in glob.glob(pattern):
-            db_paths.add(os.path.realpath(path))
-
-    if not db_paths:
-        logger.warning(
-            "No solicitor_ledger.db files found under %s or %s",
-            project_root, data_root
-        )
-        return []
-
-    results = []
-    for db_path in sorted(db_paths):
-        logger.info("Migrating: %s", db_path)
-        res = migrate_db(db_path)
-        results.append(res)
-        status_str = res['status'].upper()
-        logger.info("  [%s] %s", status_str, res['message'])
-
-    return results
-
-
-def print_summary(results: list):
-    print("\n" + "=" * 60)
-    print("PHASE 4A MIGRATION SUMMARY")
-    print("=" * 60)
-    ok = sum(1 for r in results if r["status"] == "ok")
-    skipped = sum(1 for r in results if r["status"] == "skip")
-    errors = sum(1 for r in results if r["status"] == "error")
-    print(f"  Total databases found  : {len(results)}")
-    print(f"  Successfully migrated  : {ok}")
-    print(f"  Skipped (no changes)   : {skipped}")
-    print(f"  Errors                 : {errors}")
-    print()
-    for r in results:
-        icon = {"ok": "[OK]", "skip": "[SKIP]", "error": "[ERR]"}.get(r["status"], "?")
-        print(f"  {icon}  {r['db_path']}")
-        if r["columns_added"]:
-            print(f"        Added: {', '.join(r['columns_added'])}")
-        if r["message"]:
-            print(f"        Note:  {r['message']}")
-    print("=" * 60)
-    print("Phase 4A role foundation migration complete.")
-    print("Supported roles:", ", ".join(PHASE4A_ROLES))
-    print()
+    print("Phase 4A migration complete.")
+    print(f"  Status: {result['status']}")
+    print(f"  Firm code: {result['firm'].get('firm_code')}")
+    print(f"  Workspace DB: {result['workspace']['database_path']}")
+    if result["status"] == "migrated":
+        print(f"  Legacy source: {result['legacy_path']}")
+        print(f"  Copied/moved: {'moved' if result['move'] else 'copied'}")
+    return 0
 
 
 if __name__ == "__main__":
-    data_root = sys.argv[1] if len(sys.argv) > 1 else None
-    results = run_migration(data_root=data_root)
-    print_summary(results)
-    sys.exit(1 if any(r["status"] == "error" for r in results) else 0)
+    raise SystemExit(main())

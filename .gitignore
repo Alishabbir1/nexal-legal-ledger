@@ -5,3 +5,6 @@ backups/
 installer_output.zip
 installer_output (2).zip
 *.log
+
+# Phase 4A tenant data (generated at runtime)
+data/
