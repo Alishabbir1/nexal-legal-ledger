@@ -4,7 +4,7 @@ Platform registry database — firms, workspaces, and user linkage.
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from nexal_platform.config import PlatformPaths, get_platform_paths
 
@@ -16,7 +16,7 @@ def _utc_now() -> str:
 class PlatformDatabase:
     """Manages platform.db metadata for multi-tenant Nexal Legal."""
 
-    def __init__(self, paths: PlatformPaths | None = None):
+    def __init__(self, paths: Optional[PlatformPaths] = None):
         self.paths = paths or get_platform_paths()
         self.init_schema()
 
@@ -104,10 +104,10 @@ class PlatformDatabase:
         self,
         name: str,
         slug: str,
-        firm_code: str | None = None,
-        portal_firm_id: str | None = None,
-        firm_id: str | None = None,
-    ) -> dict[str, Any]:
+        firm_code: Optional[str] = None,
+        portal_firm_id: Optional[str] = None,
+        firm_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         firm_id = firm_id or str(uuid.uuid4())
         now = _utc_now()
         conn = self.get_connection()
@@ -136,8 +136,8 @@ class PlatformDatabase:
         self,
         firm_id: str,
         database_path: str,
-        workspace_id: str | None = None,
-    ) -> dict[str, Any]:
+        workspace_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         workspace_id = workspace_id or str(uuid.uuid4())
         now = _utc_now()
         conn = self.get_connection()
@@ -158,9 +158,9 @@ class PlatformDatabase:
         self,
         firm_id: str,
         email: str,
-        portal_user_id: str | None = None,
-        user_id: str | None = None,
-    ) -> dict[str, Any]:
+        portal_user_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         user_id = user_id or str(uuid.uuid4())
         now = _utc_now()
         conn = self.get_connection()
@@ -177,7 +177,7 @@ class PlatformDatabase:
             conn.close()
         return self.get_user(user_id)
 
-    def get_firm(self, firm_id: str) -> dict[str, Any]:
+    def get_firm(self, firm_id: str) -> Dict[str, Any]:
         conn = self.get_connection()
         try:
             row = conn.execute("SELECT * FROM firms WHERE id = ?", (firm_id,)).fetchone()
@@ -187,7 +187,7 @@ class PlatformDatabase:
         finally:
             conn.close()
 
-    def get_firm_by_slug(self, slug: str) -> dict[str, Any] | None:
+    def get_firm_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
         conn = self.get_connection()
         try:
             row = conn.execute(
@@ -198,7 +198,7 @@ class PlatformDatabase:
         finally:
             conn.close()
 
-    def get_firm_by_code(self, firm_code: str) -> dict[str, Any] | None:
+    def get_firm_by_code(self, firm_code: str) -> Optional[Dict[str, Any]]:
         conn = self.get_connection()
         try:
             row = conn.execute(
@@ -209,7 +209,7 @@ class PlatformDatabase:
         finally:
             conn.close()
 
-    def get_workspace_for_firm(self, firm_id: str) -> dict[str, Any]:
+    def get_workspace_for_firm(self, firm_id: str) -> Dict[str, Any]:
         conn = self.get_connection()
         try:
             row = conn.execute("SELECT * FROM workspaces WHERE firm_id = ?", (firm_id,)).fetchone()
@@ -219,7 +219,7 @@ class PlatformDatabase:
         finally:
             conn.close()
 
-    def get_user(self, user_id: str) -> dict[str, Any]:
+    def get_user(self, user_id: str) -> Dict[str, Any]:
         conn = self.get_connection()
         try:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -229,7 +229,7 @@ class PlatformDatabase:
         finally:
             conn.close()
 
-    def list_firms(self) -> list[dict[str, Any]]:
+    def list_firms(self) -> List[Dict[str, Any]]:
         conn = self.get_connection()
         try:
             rows = conn.execute("SELECT * FROM firms ORDER BY created_at ASC").fetchall()

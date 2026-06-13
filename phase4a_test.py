@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import traceback
+from typing import Dict, List, Optional
 
 from database import Database, _default_db_path
 
@@ -60,7 +61,7 @@ def _insert_marker(db: Database, client_code: str) -> None:
         conn.close()
 
 
-def _list_client_codes(db: Database) -> list[str]:
+def _list_client_codes(db: Database) -> List[str]:
     conn = db.get_connection()
     try:
         rows = conn.execute("SELECT client_code FROM clients ORDER BY client_code").fetchall()
@@ -69,9 +70,9 @@ def _list_client_codes(db: Database) -> list[str]:
         conn.close()
 
 
-def run_phase4a_tests(data_root: str | None = None) -> dict:
+def run_phase4a_tests(data_root: Optional[str] = None) -> Dict:
     """Execute the full Phase 4A validation suite."""
-    results: list[dict] = []
+    results: List[Dict] = []
     passed = True
 
     root = data_root or tempfile.mkdtemp(prefix="nexal-phase4a-")

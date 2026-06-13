@@ -2,7 +2,7 @@
 Firm provisioning — register firm, workspace, and isolated ledger database.
 """
 import re
-from typing import Any
+from typing import Any, Dict, Optional
 
 from nexal_platform.config import get_platform_paths
 from nexal_platform.platform_db import PlatformDatabase
@@ -25,11 +25,11 @@ def _validate_slug(slug: str) -> str:
 def provision_firm(
     name: str,
     slug: str,
-    firm_code: str | None = None,
-    owner_email: str | None = None,
-    portal_firm_id: str | None = None,
-    portal_user_id: str | None = None,
-) -> dict[str, Any]:
+    firm_code: Optional[str] = None,
+    owner_email: Optional[str] = None,
+    portal_firm_id: Optional[str] = None,
+    portal_user_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Provision a new law firm tenant.
 

@@ -1,6 +1,8 @@
 """
 Database routing — resolve firm to isolated SQLite ledger database.
 """
+from typing import Any, Dict, Optional, Tuple
+
 from database import Database
 
 from nexal_platform.config import PlatformPaths, get_platform_paths
@@ -10,10 +12,10 @@ from nexal_platform.platform_db import PlatformDatabase
 class TenantRouter:
     """Routes a firm identifier to its dedicated ledger Database instance."""
 
-    def __init__(self, paths: PlatformPaths | None = None):
+    def __init__(self, paths: Optional[PlatformPaths] = None):
         self.paths = paths or get_platform_paths()
         self.platform = PlatformDatabase(self.paths)
-        self._cache: dict[str, Database] = {}
+        self._cache: Dict[str, Database] = {}
 
     def resolve_database_path(self, firm_id: str) -> str:
         workspace = self.platform.get_workspace_for_firm(firm_id)
@@ -34,13 +36,13 @@ class TenantRouter:
     def clear_cache(self) -> None:
         self._cache.clear()
 
-    def get_database_for_code(self, firm_code: str) -> tuple[dict, Database]:
+    def get_database_for_code(self, firm_code: str) -> Tuple[Dict[str, Any], Database]:
         firm = self.platform.get_firm_by_code(firm_code)
         if firm is None:
             raise KeyError(f"No firm registered for code: {firm_code}")
         return firm, self.get_database(firm["id"])
 
-    def get_database_for_slug(self, slug: str) -> tuple[dict, Database]:
+    def get_database_for_slug(self, slug: str) -> Tuple[Dict[str, Any], Database]:
         firm = self.platform.get_firm_by_slug(slug)
         if firm is None:
             raise KeyError(f"No firm registered for slug: {slug}")

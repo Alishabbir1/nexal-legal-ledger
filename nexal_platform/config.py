@@ -4,6 +4,7 @@ Path configuration for Nexal Legal multi-tenant data layout.
 import os
 import sys
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ def _default_root() -> str:
     return base
 
 
-def get_platform_paths(root: str | None = None) -> PlatformPaths:
+def get_platform_paths(root: Optional[str] = None) -> PlatformPaths:
     """Return platform paths, creating the directory tree if needed."""
     resolved_root = os.path.abspath(root or _default_root())
     paths = PlatformPaths(

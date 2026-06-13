@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import uuid
+from typing import Dict, List, Optional
 
 from database import Database
 
@@ -12,7 +13,7 @@ from nexal_platform.provision import provision_firm
 from nexal_platform.router import TenantRouter
 
 
-def verify_tenant_isolation(paths_root: str | None = None) -> dict:
+def verify_tenant_isolation(paths_root: Optional[str] = None) -> Dict:
     """
     Provision two firms, write distinct data to each, and verify no cross-read.
 
@@ -69,7 +70,7 @@ def _insert_marker_client(db: Database, client_code: str) -> None:
         conn.close()
 
 
-def _list_client_codes(db: Database) -> list[str]:
+def _list_client_codes(db: Database) -> List[str]:
     conn = db.get_connection()
     try:
         rows = conn.execute("SELECT client_code FROM clients ORDER BY client_code").fetchall()

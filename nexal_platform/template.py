@@ -3,13 +3,14 @@ Template database management for per-firm provisioning.
 """
 import os
 import shutil
+from typing import Optional
 
 from database import Database
 
 from nexal_platform.config import PlatformPaths, get_platform_paths
 
 
-def ensure_template_database(paths: PlatformPaths | None = None) -> str:
+def ensure_template_database(paths: Optional[PlatformPaths] = None) -> str:
     """
     Ensure a clean firm template database exists.
 

@@ -11,6 +11,7 @@ import argparse
 import os
 import shutil
 import sys
+from typing import Optional
 
 from database import Database, _default_db_path
 
@@ -20,11 +21,11 @@ from nexal_platform.template import ensure_template_database
 
 
 def migrate_legacy_database(
-    legacy_path: str | None = None,
+    legacy_path: Optional[str] = None,
     firm_name: str = "Legacy Firm",
     firm_code: str = "FIRM000",
     slug: str = "legacy",
-    owner_email: str | None = None,
+    owner_email: Optional[str] = None,
     move: bool = False,
 ) -> dict:
     """
