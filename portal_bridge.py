@@ -10,9 +10,9 @@ from werkzeug.security import generate_password_hash
 
 from db_router import get_db_for_firm
 from nexal_platform.platform_db import PlatformDatabase
+from nexal_platform.portal_link import resolve_active_portal_firm
 from sso_auth import (
     build_session_from_token,
-    enforce_firm_status,
     map_portal_role_to_ledger,
     validate_sso_token,
 )
@@ -28,9 +28,12 @@ ROLE_MAP = {
 }
 
 
-def resolve_platform_firm(portal_firm_id: str) -> Dict[str, Any]:
+def resolve_platform_firm(
+    portal_firm_id: str,
+    jwt_payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Map portal firm id to platform firm record."""
-    return enforce_firm_status(portal_firm_id)
+    return resolve_active_portal_firm(portal_firm_id, jwt_payload)
 
 
 def _derive_username(email: str, portal_user_id: str, preferred: Optional[str] = None) -> str:
@@ -162,7 +165,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
 
 def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Validate firm, resolve user, and populate Flask session."""
-    platform_firm = resolve_platform_firm(str(jwt_payload["firm_id"]))
+    platform_firm = resolve_platform_firm(str(jwt_payload["firm_id"]), jwt_payload)
     platform_firm_id = platform_firm["id"]
     ledger_user = ensure_portal_user_in_ledger(jwt_payload, platform_firm_id)
     jwt_payload["username"] = ledger_user["username"]
@@ -191,7 +194,7 @@ def clear_sso_session(flask_session) -> None:
 
 def validate_sso_request(token: str) -> Dict[str, Any]:
     payload = validate_sso_token(token)
-    resolve_platform_firm(str(payload["firm_id"]))
+    resolve_platform_firm(str(payload["firm_id"]), payload)
     return payload
 
 

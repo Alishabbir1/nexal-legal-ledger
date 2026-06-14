@@ -119,29 +119,14 @@ def is_token_valid(token: str) -> bool:
         return False
 
 
-def enforce_firm_status(platform_firm_id: str) -> Dict[str, Any]:
+def enforce_firm_status(
+    platform_firm_id: str,
+    jwt_payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Resolve platform firm and ensure it is active."""
-    from nexal_platform.platform_db import PlatformDatabase
+    from nexal_platform.portal_link import resolve_active_portal_firm
 
-    platform = PlatformDatabase()
-    firm = platform.get_firm_by_portal_firm_id(platform_firm_id)
-    if firm is None:
-        firm = _safe_get_firm(platform, platform_firm_id)
-    if firm is None:
-        raise ValueError("Firm not found for portal firm id: " + platform_firm_id)
-    if firm["status"] != "active":
-        raise ValueError("Firm is not active (status: " + str(firm["status"]) + ")")
-    workspace = platform.get_workspace_for_firm(firm["id"])
-    if workspace["status"] != "active":
-        raise ValueError("Workspace is not active for firm: " + firm["id"])
-    return firm
-
-
-def _safe_get_firm(platform, firm_id: str) -> Optional[Dict[str, Any]]:
-    try:
-        return platform.get_firm(firm_id)
-    except KeyError:
-        return None
+    return resolve_active_portal_firm(platform_firm_id, jwt_payload)
 
 
 def map_portal_role_to_ledger(role: str) -> str:

@@ -122,6 +122,36 @@ def test_resolve_platform_firm_by_portal_id(phase4b_env):
     assert firm["id"] == result["firm"]["id"]
 
 
+def test_auto_provision_portal_firm_on_first_sso(phase4b_env):
+    from db_router import reset_router
+
+    reset_router()
+    from app import app
+
+    portal_firm_id = "498205b5-0d17-453c-a0de-e507955e94fb"
+    token = generate_sso_token(
+        user_id="7a0a8a6e-dfc2-444e-9bd0-10e13af27035",
+        email="sunthessmunir@gmail.com",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        username="sunthessmunir",
+        extra={"firm_name": "new"},
+    )
+
+    client = app.test_client()
+    response = client.get("/auth/sso?token=" + token)
+    assert response.status_code == 302
+
+    firm = resolve_platform_firm(portal_firm_id)
+    assert firm["portal_firm_id"] == portal_firm_id
+    assert firm["name"] == "new"
+
+    with client.session_transaction() as sess:
+        assert sess.get("sso_login") is True
+        assert sess.get("firm_id") == firm["id"]
+        assert sess.get("user_id") is not None
+
+
 def test_flask_sso_login_endpoint(phase4b_env):
     from db_router import reset_router
     reset_router()
