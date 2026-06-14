@@ -81,6 +81,16 @@ class PlatformDatabase:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_firms_firm_code ON firms(firm_code)"
             )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_firms_portal_firm_id ON firms(portal_firm_id)"
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_firms_portal_firm_id_unique
+                ON firms(portal_firm_id)
+                WHERE portal_firm_id IS NOT NULL
+                """
+            )
             conn.commit()
         finally:
             conn.close()

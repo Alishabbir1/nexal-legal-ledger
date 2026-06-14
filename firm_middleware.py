@@ -7,12 +7,14 @@ from typing import Any, Dict, Tuple
 from flask import jsonify, redirect, request, session, url_for
 
 from db_router import get_db_for_firm
+from nexal_platform.session_security import safe_redirect_target
 from portal_bridge import clear_sso_session, establish_sso_session, log_sso_audit
 from sso_auth import validate_sso_token
 
 
 def handle_sso_login(token: str, flask_session) -> Tuple[str, str]:
     """Process SSO token and establish authenticated session."""
+    flask_session.clear()
     payload = validate_sso_token(token)
     session_data = establish_sso_session(flask_session, payload)
     firm_db = get_db_for_firm(session_data["firm_id"])
@@ -47,7 +49,7 @@ def register_sso_routes(app):
                     "redirect": url_for("client_ledger"),
                 }
             ), 200
-        except ValueError as exc:
+        except (ValueError, PermissionError, KeyError, LookupError) as exc:
             return jsonify({"error": str(exc), "code": "SSO_FAILED"}), 401
 
     @app.route("/auth/sso", methods=["GET", "POST"])
@@ -59,9 +61,9 @@ def register_sso_routes(app):
             return jsonify({"error": "Missing SSO token", "code": "NO_TOKEN"}), 400
         try:
             handle_sso_login(token, session)
-            next_url = request.args.get("next") or url_for("client_ledger")
+            next_url = safe_redirect_target(request.args.get("next"))
             return redirect(next_url)
-        except ValueError as exc:
+        except (ValueError, PermissionError, KeyError, LookupError) as exc:
             return jsonify({"error": str(exc), "code": "SSO_FAILED"}), 401
 
     @app.route("/auth/sso/status", methods=["GET"])

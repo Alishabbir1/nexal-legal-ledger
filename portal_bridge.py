@@ -74,7 +74,10 @@ def resolve_portal_user(
                 (email,),
             ).fetchone()
             if row:
-                conn.execute(
+                if row["portal_user_id"] and str(row["portal_user_id"]) != str(portal_user_id):
+                    raise LookupError("Portal user email conflict in ledger database")
+                if not row["portal_user_id"]:
+                    conn.execute(
                     """
                     UPDATE users
                     SET portal_user_id = ?, firm_id = ?, email = ?
@@ -153,7 +156,9 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
 
     try:
         return resolve_portal_user(email, portal_user_id, platform_firm_id, preferred_username)
-    except LookupError:
+    except LookupError as exc:
+        if "conflict" in str(exc).lower():
+            raise
         return provision_portal_user(
             email,
             portal_user_id,
@@ -169,7 +174,12 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
     platform_firm_id = platform_firm["id"]
     ledger_user = ensure_portal_user_in_ledger(jwt_payload, platform_firm_id)
     jwt_payload["username"] = ledger_user["username"]
-    session_data = build_session_from_token(jwt_payload, ledger_user["user_id"], platform_firm_id)
+    session_data = build_session_from_token(
+        jwt_payload,
+        ledger_user["user_id"],
+        platform_firm_id,
+        ledger_role=ledger_user["role"],
+    )
     for key, value in session_data.items():
         flask_session[key] = value
     flask_session["sso_established_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

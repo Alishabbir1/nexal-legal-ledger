@@ -42,6 +42,10 @@ echo "[4/4] Running Phase 4A validation..."
 python3 phase4a_test.py
 
 echo ""
+echo "[5/5] Running Phase 4B/4C integration tests..."
+python3 -m pytest tests/test_phase4b_sso.py tests/test_phase4c_integration.py -q
+
+echo ""
 echo "Phase 4A deployment preparation complete."
 echo "Restart the ledger service to apply any code updates:"
 echo "  sudo systemctl restart nexal-ledger"

@@ -137,15 +137,21 @@ def map_portal_role_to_ledger(role: str) -> str:
     return "staff"
 
 
-def build_session_from_token(payload: Dict[str, Any], ledger_user_id: int, platform_firm_id: str) -> Dict[str, Any]:
+def build_session_from_token(
+    payload: Dict[str, Any],
+    ledger_user_id: int,
+    platform_firm_id: str,
+    ledger_role: Optional[str] = None,
+) -> Dict[str, Any]:
     """Build Flask session dict after portal user is resolved in ledger DB."""
     username = payload.get("username") or payload["email"].split("@")[0]
+    role = ledger_role or map_portal_role_to_ledger(payload.get("role", "staff"))
     return {
         "user_id": ledger_user_id,
         "username": username,
         "email": payload["email"],
         "firm_id": platform_firm_id,
-        "role": map_portal_role_to_ledger(payload.get("role", "staff")),
+        "role": role,
         "portal_user_id": payload["sub"],
         "portal_role": payload.get("role", "staff"),
         "sso_login": True,

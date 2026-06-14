@@ -225,8 +225,10 @@ CLIENT_DETAIL_FIELD_LABELS = {
 
 
 def can_edit_client_details(role: str = None) -> bool:
-    """Admin and staff may amend client profile fields. Read-only not implemented as a role."""
-    return (role or session.get('role', '')) in ('admin', 'staff')
+    """Admin and staff may amend client profile fields. Read-only portal users cannot."""
+    from lib.permissions import can_modify_ledger_data
+
+    return can_modify_ledger_data(role=role)
 
 
 def _validate_client_detail_form(form) -> Tuple[Dict, Optional[str]]:
@@ -286,11 +288,20 @@ SESSION_TIMEOUT_SECONDS = 900  # 15 minutes
 @app.before_request
 def require_login():
     from time import time
+    from db_router import get_db_for_firm
+    from nexal_platform.session_security import clear_invalid_sso_session, validate_sso_session_binding
+
     endpoint = request.endpoint or ''
     if endpoint in LOGIN_EXEMPT_ENDPOINTS or endpoint.startswith('static'):
         return
     if endpoint == 'logout':
         return
+    if session.get('sso_login'):
+        binding_error = validate_sso_session_binding(session, get_db_for_firm)
+        if binding_error:
+            clear_invalid_sso_session(session)
+            flash('Your session is no longer valid. Please sign in again.', 'error')
+            return redirect(url_for('login', next=request.path, reason='sso_invalid'))
     if not session.get('user_id'):
         next_url = request.path if request.method == 'GET' else url_for('client_ledger')
         return redirect(url_for('login', next=next_url))
