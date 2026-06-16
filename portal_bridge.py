@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 ROLE_MAP = {
     "firm_admin": "admin",
     "admin": "admin",
+    "manager": "admin",
     "cashier": "staff",
+    "fee_earner": "staff",
     "staff": "staff",
     "read_only": "staff",
 }
@@ -43,11 +45,31 @@ def _derive_username(email: str, portal_user_id: str, preferred: Optional[str] =
     return local or ("user-" + portal_user_id[:8])
 
 
+def _sync_portal_user_roles(
+    conn,
+    user_id: int,
+    platform_firm_id: str,
+    portal_role: str,
+) -> None:
+    """Keep ledger role columns aligned with portal SSO on each login."""
+    ledger_role = map_portal_role_to_ledger(portal_role)
+    conn.execute(
+        """
+        UPDATE users
+        SET role = ?, portal_role = ?, firm_id = ?, active = 1
+        WHERE user_id = ?
+        """,
+        (ledger_role, portal_role, platform_firm_id, user_id),
+    )
+    conn.commit()
+
+
 def resolve_portal_user(
     email: str,
     portal_user_id: str,
     platform_firm_id: str,
     preferred_username: Optional[str] = None,
+    portal_role: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Find existing ledger user linked to portal identity."""
     db = get_db_for_firm(platform_firm_id)
@@ -62,6 +84,15 @@ def resolve_portal_user(
             (portal_user_id,),
         ).fetchone()
         if row:
+            if portal_role:
+                _sync_portal_user_roles(conn, row["user_id"], platform_firm_id, portal_role)
+                row = conn.execute(
+                    """
+                    SELECT user_id, username, role, firm_id, portal_user_id, email
+                    FROM users WHERE user_id = ?
+                    """,
+                    (row["user_id"],),
+                ).fetchone()
             return dict(row)
 
         if email:
@@ -90,6 +121,12 @@ def resolve_portal_user(
                     "SELECT user_id, username, role, firm_id, portal_user_id, email FROM users WHERE user_id = ?",
                     (row["user_id"],),
                 ).fetchone()
+                if portal_role:
+                    _sync_portal_user_roles(conn, row["user_id"], platform_firm_id, portal_role)
+                    updated = conn.execute(
+                        "SELECT user_id, username, role, firm_id, portal_user_id, email FROM users WHERE user_id = ?",
+                        (row["user_id"],),
+                    ).fetchone()
                 return dict(updated)
     finally:
         conn.close()
@@ -155,7 +192,13 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
     preferred_username = payload.get("username")
 
     try:
-        return resolve_portal_user(email, portal_user_id, platform_firm_id, preferred_username)
+        return resolve_portal_user(
+            email,
+            portal_user_id,
+            platform_firm_id,
+            preferred_username,
+            portal_role,
+        )
     except LookupError as exc:
         if "conflict" in str(exc).lower():
             raise

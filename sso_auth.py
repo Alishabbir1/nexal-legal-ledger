@@ -132,7 +132,7 @@ def enforce_firm_status(
 def map_portal_role_to_ledger(role: str) -> str:
     """Map portal roles to ledger roles (admin|staff)."""
     normalized = (role or "staff").strip().lower()
-    if normalized in ("firm_admin", "admin"):
+    if normalized in ("firm_admin", "admin", "manager"):
         return "admin"
     return "staff"
 
