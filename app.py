@@ -225,10 +225,10 @@ CLIENT_DETAIL_FIELD_LABELS = {
 
 
 def can_edit_client_details(role: str = None) -> bool:
-    """Admin and staff may amend client profile fields. Read-only portal users cannot."""
-    from lib.permissions import can_modify_ledger_data
+    """Admin and client-operation roles may amend client profile fields."""
+    from lib.permissions import can_edit_client_details as portal_can_edit_clients
 
-    return can_modify_ledger_data(role=role)
+    return portal_can_edit_clients()
 
 
 def _validate_client_detail_form(form) -> Tuple[Dict, Optional[str]]:

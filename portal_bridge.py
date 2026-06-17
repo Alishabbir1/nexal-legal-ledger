@@ -22,10 +22,13 @@ logger = logging.getLogger(__name__)
 ROLE_MAP = {
     "firm_admin": "admin",
     "admin": "admin",
+    "owner": "admin",
+    "practice_manager": "admin",
     "manager": "admin",
+    "staff": "staff",
     "cashier": "staff",
     "fee_earner": "staff",
-    "staff": "staff",
+    "solicitor": "staff",
     "read_only": "staff",
 }
 

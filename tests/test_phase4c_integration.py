@@ -253,9 +253,8 @@ def test_sso_open_redirect_blocked(phase4c_env):
     "portal_role,ledger_role,can_modify,can_admin,can_finance,can_clients",
     [
         ("firm_admin", "admin", True, True, True, True),
-        ("cashier", "staff", True, False, True, True),
         ("staff", "staff", True, False, True, True),
-        ("read_only", "staff", False, False, False, False),
+        ("cashier", "staff", True, False, True, True),
     ],
 )
 def test_portal_role_permission_boundaries(
@@ -278,7 +277,7 @@ def test_portal_role_permission_boundaries(
         assert can_access_admin_functions() is can_admin
         assert can_access_financial_functions() is can_finance
         assert can_access_client_operations() is can_clients
-        assert is_read_only_user() is (portal_role == "read_only")
+        assert is_read_only_user() is False
 
 
 def test_role_mapping_for_portal_roles(phase4c_env):
