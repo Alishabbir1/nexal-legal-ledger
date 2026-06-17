@@ -132,6 +132,9 @@ except Exception:
 from firm_middleware import register_sso_routes
 register_sso_routes(app)
 
+from nexal_platform.ops_routes import register_ops_routes
+register_ops_routes(app)
+
 LOGIN_EXEMPT_ENDPOINTS = {
     'login', 'static', 'admin_recovery', 'admin_recovery_reset', 'reset_password',
     'admin_reset_password_page', 'sso_login', 'api_sso_login', 'sso_status', 'sso_logout',
@@ -1412,6 +1415,29 @@ def system_backups():
 @require_admin
 def backup_create_now():
     """Create backup immediately (admin only)."""
+    nexal_data = os.environ.get('NEXAL_DATA_DIR', '').strip()
+    if nexal_data:
+        try:
+            from nexal_platform.backup import BackupService
+
+            result = BackupService().run_backup(schedule='daily')
+            if result.success:
+                db.set_config('last_backup_failure', '')
+                flash(f'Multi-tenant backup OK: {result.manifest_path}', 'success')
+            else:
+                db.set_config(
+                    'last_backup_failure',
+                    datetime.now().strftime('%Y-%m-%d %H:%M') + ': ' + (result.error or 'failed'),
+                )
+                flash(f'Backup failed: {result.error}', 'error')
+        except Exception as exc:
+            db.set_config(
+                'last_backup_failure',
+                datetime.now().strftime('%Y-%m-%d %H:%M') + ': ' + str(exc),
+            )
+            flash(f'Backup failed: {exc}', 'error')
+        return redirect(url_for('system_backups'))
+
     from backup_service import create_backup
 
     def audit(action, details):
