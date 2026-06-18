@@ -166,6 +166,7 @@ def test_backup_health_api_bypasses_login_and_requires_ops_secret(isolated_data_
     response = client.get("/api/ops/backup-health")
     assert response.status_code == 401
     assert response.is_json
+    assert response.get_json()["reason"] == "missing_ops_secret_header"
 
     response = client.get(
         "/api/ops/backup-health",

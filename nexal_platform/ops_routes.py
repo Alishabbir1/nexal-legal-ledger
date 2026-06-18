@@ -1,29 +1,34 @@
 """
 Operational API routes for portal integration (backup health, monitoring).
 """
-import os
+import hmac
+from typing import Tuple
 
 from flask import jsonify, request
 
 from nexal_platform.backup import BackupService
+from nexal_platform.ops_secret import get_expected_ops_secret
 
 
-def _verify_ops_secret() -> bool:
-    expected = (
-        os.environ.get("NEXAL_OPS_SECRET", "").strip()
-        or os.environ.get("BACKUP_HEALTH_SECRET", "").strip()
-    )
+def _verify_ops_secret() -> Tuple[bool, str]:
+    expected = get_expected_ops_secret()
+    provided = (request.headers.get("X-Nexal-Ops-Secret") or "").strip().strip('"').strip("'")
+
     if not expected:
-        return False
-    provided = request.headers.get("X-Nexal-Ops-Secret", "").strip()
-    return provided == expected
+        return False, "server_secret_not_configured"
+    if not provided:
+        return False, "missing_ops_secret_header"
+    if not hmac.compare_digest(provided, expected):
+        return False, "invalid_ops_secret"
+    return True, ""
 
 
 def register_ops_routes(app):
     @app.route("/api/ops/backup-health", methods=["GET"])
     def api_ops_backup_health():
-        if not _verify_ops_secret():
-            return jsonify({"error": "Unauthorized"}), 401
+        ok, reason = _verify_ops_secret()
+        if not ok:
+            return jsonify({"error": "Unauthorized", "reason": reason}), 401
 
         service = BackupService()
         summary = service.health_summary()
