@@ -138,6 +138,7 @@ register_ops_routes(app)
 LOGIN_EXEMPT_ENDPOINTS = {
     'login', 'static', 'admin_recovery', 'admin_recovery_reset', 'reset_password',
     'admin_reset_password_page', 'sso_login', 'api_sso_login', 'sso_status', 'sso_logout',
+    'api_ops_backup_health',
 }
 
 

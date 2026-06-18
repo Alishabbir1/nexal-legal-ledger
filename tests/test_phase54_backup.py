@@ -155,3 +155,29 @@ def test_health_summary_reports_restore_ready(isolated_data_root):
     assert summary["restore_ready"] is True
     assert summary["tenant_count"] >= 1
     assert summary["last_manifest"] is not None
+
+
+def test_backup_health_api_bypasses_login_and_requires_ops_secret(isolated_data_root, monkeypatch):
+    import app as ledger_app
+
+    monkeypatch.setenv("NEXAL_OPS_SECRET", "phase54-ops-test-secret")
+    client = ledger_app.app.test_client()
+
+    response = client.get("/api/ops/backup-health")
+    assert response.status_code == 401
+    assert response.is_json
+
+    response = client.get(
+        "/api/ops/backup-health",
+        headers={"X-Nexal-Ops-Secret": "wrong-secret"},
+    )
+    assert response.status_code == 401
+
+    response = client.get(
+        "/api/ops/backup-health",
+        headers={"X-Nexal-Ops-Secret": "phase54-ops-test-secret"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["system"] == "ledger"
+    assert "restore_ready" in payload
