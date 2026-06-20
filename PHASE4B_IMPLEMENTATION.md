@@ -44,9 +44,13 @@ Portal Login → Portal Dashboard → Launch Ledger → Auto-login → Firm data
 | `/api/sso-login` | POST | JSON SSO login |
 | `/auth/sso` | GET/POST | Browser redirect SSO entry |
 | `/auth/sso/status` | GET | Session status JSON |
-| `/auth/sso/logout` | GET/POST | Clear SSO session |
+| `/auth/sso/logout` | GET/POST | Clear SSO session → redirect to Portal |
 
-Legacy username/password login at `/login` remains available.
+Phase 4E: Ledger is SSO-only. `/login` redirects to the Portal. See `PHASE4E_DATABASE_REVIEW.md`.
+
+| Variable | Purpose |
+|---|---|
+| `NEXAL_PORTAL_URL` or `PORTAL_APP_URL` | Portal base URL for redirects (default `https://nexallegal.co.uk`) |
 
 ## Portal endpoint
 

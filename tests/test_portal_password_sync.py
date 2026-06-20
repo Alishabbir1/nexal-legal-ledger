@@ -115,80 +115,6 @@ def test_sso_login_resyncs_password_after_portal_change(isolated_env):
     assert verify_password(user["password_hash"], "UpdatedPass2!")
 
 
-def test_recovery_key_generation_after_sso_password_sync(isolated_env):
-    """SSO admin can generate a recovery key without re-entering a password."""
-    from app import app
-
-    portal_firm_id = str(uuid.uuid4())
-    portal_user_id = str(uuid.uuid4())
-    portal_password = "RecoveryKeyPass55!"
-    portal_hash = generate_password_hash(portal_password, method="scrypt")
-
-    provision_firm(
-        name="Recovery Firm",
-        slug=f"recovery-{uuid.uuid4().hex[:8]}",
-        portal_firm_id=portal_firm_id,
-    )
-
-    token = generate_sso_token(
-        user_id=portal_user_id,
-        email="admin@recovery.example",
-        firm_id=portal_firm_id,
-        role="firm_admin",
-        username="admin",
-        extra={"password_hash": portal_hash},
-    )
-
-    client = app.test_client()
-    response = client.get("/auth/sso?token=" + token)
-    assert response.status_code == 302
-
-    with client.session_transaction() as sess:
-        user_id = sess.get("user_id")
-        assert user_id is not None
-
-    gen = client.post("/admin/security/generate-recovery-key")
-    assert gen.status_code == 302
-    with client.session_transaction() as sess:
-        assert sess.get("pending_recovery_key")
-        assert sess.get("pending_recovery_key").startswith("SRN-")
-
-
-def test_sso_admin_generates_recovery_key_with_bcrypt_sync(isolated_env):
-    """SSO users with Portal bcrypt hashes can generate recovery keys without password."""
-    from app import app
-
-    portal_firm_id = str(uuid.uuid4())
-    portal_user_id = str(uuid.uuid4())
-    portal_hash = bcrypt.hashpw(
-        b"MyPassword123",
-        bcrypt.gensalt(rounds=12),
-    ).decode("utf-8")
-
-    provision_firm(
-        name="Bcrypt Firm",
-        slug=f"bcrypt-{uuid.uuid4().hex[:8]}",
-        portal_firm_id=portal_firm_id,
-    )
-
-    token = generate_sso_token(
-        user_id=portal_user_id,
-        email="user@bcrypt.example",
-        firm_id=portal_firm_id,
-        role="firm_admin",
-        username="user",
-        extra={"password_hash": portal_hash},
-    )
-
-    client = app.test_client()
-    assert client.get("/auth/sso?token=" + token).status_code == 302
-
-    gen = client.post("/admin/security/generate-recovery-key")
-    assert gen.status_code == 302
-    with client.session_transaction() as sess:
-        assert sess.get("pending_recovery_key", "").startswith("SRN-")
-
-
 def test_sso_login_clears_recovery_confirm_lockout(isolated_env):
     """SSO re-launch clears legacy recovery-confirm lockout state."""
     from app import app
@@ -224,14 +150,12 @@ def test_sso_login_clears_recovery_confirm_lockout(isolated_env):
         user_id = sess["user_id"]
 
     db = get_db_for_firm(firm_id)
-    # Simulate legacy random hash that was never synced
     db.update_user_password(user_id, generate_password_hash("random-unknown", method="scrypt"))
     for _ in range(5):
         db.record_failed_recovery_confirm(user_id)
     locked, _, _ = db.is_recovery_confirm_locked(user_id)
     assert locked is True
 
-    # Re-launch via SSO repairs hash and clears lockout
     token2 = generate_sso_token(
         user_id=portal_user_id,
         email="lockout@example.com",
@@ -246,11 +170,6 @@ def test_sso_login_clears_recovery_confirm_lockout(isolated_env):
     assert locked is False
     user = db.get_user_by_id(user_id)
     assert verify_password(user["password_hash"], portal_password)
-
-    gen = client.post("/admin/security/generate-recovery-key")
-    assert gen.status_code == 302
-    with client.session_transaction() as sess:
-        assert sess.get("pending_recovery_key", "").startswith("SRN-")
 
 
 def test_prepare_sso_password_for_verification_repairs_from_session(isolated_env):

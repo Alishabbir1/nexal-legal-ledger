@@ -10,7 +10,10 @@ from app import OPENPYXL_AVAILABLE, REPORTLAB_AVAILABLE, app, _get_exports_dir
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    from nexal_platform import session_security
+
+    monkeypatch.setattr(session_security, 'validate_sso_session_binding', lambda *args, **kwargs: None)
     app.config['TESTING'] = True
     admin = app_module.db.get_user_by_username('admin')
     with app.test_client() as test_client:
@@ -18,6 +21,7 @@ def client():
             sess['user_id'] = admin['user_id'] if admin else 1
             sess['username'] = 'admin'
             sess['role'] = 'admin'
+            sess['sso_login'] = True
         yield test_client
 
 

@@ -83,9 +83,11 @@ def register_sso_routes(app):
 
     @app.route("/auth/sso/logout", methods=["POST", "GET"])
     def sso_logout():
+        from lib.portal_auth import portal_logout_redirect
+
         clear_sso_session(session)
         session.clear()
-        return redirect(url_for("login"))
+        return portal_logout_redirect()
 
     return app
 

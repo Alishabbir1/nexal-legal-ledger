@@ -3,7 +3,7 @@
 {% block content %}
 <div class="card">
     <h2 style="margin-bottom: 8px;">User Management</h2>
-    <p style="margin-bottom: 20px;">Manage users and generate password reset links. Admin only.</p>
+    <p style="margin-bottom: 20px;">Manage Ledger users. New users must be invited through the Portal.</p>
 
     <p style="margin-bottom: 15px; color: #555;">
         Package: <strong>{{ package_usage.label }}</strong>
@@ -15,15 +15,11 @@
     </p>
     {% endif %}
 
-    {% if recovery_key_set %}
-    <p style="margin-bottom: 15px; color: #555;">Recovery key is set. Use <a href="{{ url_for('admin_recovery') }}" style="color: rgb(0, 0, 238); text-decoration: underline;">Admin Recovery</a> if an admin forgets their password.</p>
-    {% else %}
-    <p style="margin-bottom: 15px; color: #555;">Recovery key is not set. Generate one from the <a href="{{ url_for('admin_security') }}">Security</a> page.</p>
-    {% endif %}
-
-    <button type="button" class="btn btn-secondary" id="btn-regenerate-key" style="margin-bottom: 20px;">Regenerate Recovery Key</button>
-    <br>
-    <button type="button" class="btn btn-success" id="btn-add-user" style="margin-bottom: 22px;">Add User</button>
+    <p style="margin-bottom: 20px; color: #555; line-height: 1.55;">
+        To invite a new user, use the
+        <a href="{{ portal_url }}/portal" style="color: rgb(0, 0, 238); text-decoration: underline;">Portal dashboard</a>.
+        Password reset and account activation are also managed in the Portal.
+    </p>
 
     <table>
         <thead>
@@ -48,9 +44,6 @@
                 </td>
                 <td style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
                     {% if u.user_id != current_user_id and u.active %}
-                    <form method="POST" action="{{ url_for('admin_reset_password', user_id=u.user_id) }}" class="form-reset-password" data-username="{{ u.username }}" style="display: inline;">
-                        <button type="button" class="btn btn-secondary btn-sm btn-reset-password">Reset Password</button>
-                    </form>
                     {% if u.role != 'admin' %}
                     <form method="POST" action="{{ url_for('user_management_change_role', user_id=u.user_id) }}" style="display: inline;">
                         <button type="submit" class="btn btn-secondary btn-sm">→ Admin</button>
@@ -66,137 +59,4 @@
         </tbody>
     </table>
 </div>
-
-<!-- Modal: Regenerate confirmation -->
-<div id="modal-regenerate-confirm" class="um-modal" style="display: none;">
-    <div class="um-modal-overlay"></div>
-    <div class="um-modal-content">
-        <h3 style="margin-bottom: 10px;">Generate New Recovery Key</h3>
-        <p style="color: #666; margin-bottom: 20px;">Are you sure? Generating a new recovery key will permanently invalidate the existing recovery key.</p>
-        <form method="POST" action="{{ url_for('admin_generate_recovery_key') }}">
-            <input type="hidden" name="from_page" value="user_management">
-            <div style="display: flex; gap: 10px;">
-                <button type="submit" class="btn">Confirm</button>
-                <button type="button" class="btn btn-secondary" id="btn-regenerate-cancel">Cancel</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- Modal: Add User -->
-<div id="modal-add-user" class="um-modal" style="display: none;">
-    <div class="um-modal-overlay"></div>
-    <div class="um-modal-content">
-        <h3 style="margin-bottom: 15px;">Add User</h3>
-        <form method="POST" action="{{ url_for('user_management_add_user') }}">
-            <div class="form-group">
-                <label>Name</label>
-                <input type="text" name="name" placeholder="Optional">
-            </div>
-            <div class="form-group">
-                <label>Username / Email</label>
-                <input type="text" name="username" required>
-            </div>
-            <div class="form-group">
-                <label>Role</label>
-                <select name="role">
-                    <option value="admin">Admin</option>
-                    <option value="staff" selected>Staff</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Temporary Password</label>
-                <input type="password" name="temp_password" required>
-            </div>
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button type="submit" class="btn btn-success">Create User</button>
-                <button type="button" class="btn btn-secondary" id="btn-add-user-cancel">Cancel</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- Modal: Reset Password confirmation -->
-<div id="modal-reset-confirm" class="um-modal" style="display: none;">
-    <div class="um-modal-overlay"></div>
-    <div class="um-modal-content">
-        <h3 style="margin-bottom: 10px;">Reset Password</h3>
-        <p style="color: #666; margin-bottom: 20px;">Are you sure you want to generate a password reset for this user?</p>
-        <div style="display: flex; gap: 10px;">
-            <button type="button" class="btn" id="btn-reset-confirm">OK</button>
-            <button type="button" class="btn btn-secondary" id="btn-reset-cancel">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<!-- Recovery key display modal (when pending) -->
-{% if pending_recovery_key %}
-<div id="modal-recovery-key" class="um-modal" style="display: flex;">
-    <div class="um-modal-overlay"></div>
-    <div class="um-modal-content">
-        <h3 style="font-weight: 700; color: var(--warning); margin-bottom: 15px;">IMPORTANT — SAVE THIS RECOVERY KEY</h3>
-        <p style="margin-bottom: 10px;">This key will <strong>not</strong> be shown again. Store it securely offline.</p>
-        <p style="margin-bottom: 15px;">Use it on the <a href="{{ url_for('admin_recovery') }}">Admin Recovery</a> page if you forget your password.</p>
-        <div style="background: var(--warning-dim); border: 1px solid rgba(251,191,36,0.35); padding: 18px 20px; margin: 18px 0; font-family: var(--font-mono); font-size: 16px; font-weight: 600; text-align: center; border-radius: var(--r-md); color: var(--warning); letter-spacing: 0.05em; word-break: break-all;">{{ pending_recovery_key }}</div>
-        <form method="POST" action="{{ url_for('admin_recovery_key_ack') }}">
-            <input type="hidden" name="next" value="user_management">
-            <label style="display: flex; align-items: center; gap: 10px; margin: 15px 0; color: var(--text-secondary); font-size: 13px;"><input type="checkbox" id="cb-saved" required style="width: auto;"> I have securely saved this recovery key</label>
-            <button type="submit" class="btn btn-success" id="btn-continue" disabled>Continue</button>
-        </form>
-    </div>
-</div>
-{% endif %}
-
-<style>
-.um-modal { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; }
-.um-modal-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(2px); }
-.um-modal-content {
-    position: relative;
-    background: var(--bg-surface);
-    border: 1px solid var(--border-default);
-    padding: 28px 30px;
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow-lg);
-    max-width: 480px;
-    width: 90%;
-}
-</style>
-
-<script>
-(function() {
-    var btnRegen = document.getElementById('btn-regenerate-key');
-    var modalRegenConfirm = document.getElementById('modal-regenerate-confirm');
-    var btnRegenCancel = document.getElementById('btn-regenerate-cancel');
-    var btnAddUser = document.getElementById('btn-add-user');
-    var modalAddUser = document.getElementById('modal-add-user');
-    var btnAddUserCancel = document.getElementById('btn-add-user-cancel');
-    var btnCopy = document.getElementById('btn-copy-reset-link');
-    var cbSaved = document.getElementById('cb-saved');
-    var btnContinue = document.getElementById('btn-continue');
-
-    if (btnRegen) btnRegen.addEventListener('click', function() { modalRegenConfirm.style.display = 'flex'; });
-    if (btnRegenCancel) btnRegenCancel.addEventListener('click', function() { modalRegenConfirm.style.display = 'none'; });
-    if (btnAddUser) btnAddUser.addEventListener('click', function() { if (modalAddUser) modalAddUser.style.display = 'flex'; });
-    if (btnAddUserCancel) btnAddUserCancel.addEventListener('click', function() { if (modalAddUser) modalAddUser.style.display = 'none'; });
-    if (cbSaved && btnContinue) cbSaved.addEventListener('change', function() { btnContinue.disabled = !cbSaved.checked; });
-
-    var modalResetConfirm = document.getElementById('modal-reset-confirm');
-    var btnResetConfirm = document.getElementById('btn-reset-confirm');
-    var btnResetCancel = document.getElementById('btn-reset-cancel');
-    var resetFormToSubmit = null;
-    document.querySelectorAll('.btn-reset-password').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            resetFormToSubmit = this.closest('form');
-            if (modalResetConfirm) modalResetConfirm.style.display = 'flex';
-        });
-    });
-    if (btnResetConfirm) btnResetConfirm.addEventListener('click', function() {
-        if (resetFormToSubmit) resetFormToSubmit.submit();
-        if (modalResetConfirm) modalResetConfirm.style.display = 'none';
-    });
-    if (btnResetCancel) btnResetCancel.addEventListener('click', function() {
-        if (modalResetConfirm) modalResetConfirm.style.display = 'none';
-    });
-})();
-</script>
 {% endblock %}

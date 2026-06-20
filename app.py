@@ -10,14 +10,17 @@ import sys
 import os
 import io
 import csv
-import secrets
-import string
 import logging
 from typing import Tuple, Optional, Dict
 
-from werkzeug.security import generate_password_hash, check_password_hash
-
-from lib.password_verification import verify_password
+from lib.portal_auth import (
+    get_portal_base_url,
+    get_portal_forgot_password_url,
+    get_portal_login_url,
+    portal_forgot_password_redirect,
+    portal_login_redirect,
+    portal_logout_redirect,
+)
 from database import Database
 from date_utils import (
     log_transaction_date_saved,
@@ -144,8 +147,8 @@ register_ops_routes(app)
 
 LOGIN_EXEMPT_ENDPOINTS = {
     'login', 'static', 'admin_recovery', 'admin_recovery_reset', 'reset_password',
-    'admin_reset_password_page', 'sso_login', 'api_sso_login', 'sso_status', 'sso_logout',
-    'api_ops_backup_health',
+    'admin_reset_password_page', 'force_password_change', 'sso_login', 'api_sso_login',
+    'sso_status', 'sso_logout', 'api_ops_backup_health',
 }
 
 
@@ -273,27 +276,6 @@ def require_admin(f):
     return decorated
 
 
-def generate_recovery_key() -> str:
-    """Generate cryptographically secure recovery key in SRN-XXXX-XXXX-XXXX format."""
-    chars = string.ascii_uppercase + string.digits
-    def segment():
-        return ''.join(secrets.choice(chars) for _ in range(4))
-    return f"SRN-{segment()}-{segment()}-{segment()}"
-
-
-def hash_recovery_key(key: str) -> str:
-    return generate_password_hash(key, method='scrypt')
-
-
-def verify_recovery_key(key_hash: str, key: str) -> bool:
-    if not key_hash:
-        return False
-    try:
-        return check_password_hash(key_hash, key)
-    except Exception:
-        return False
-
-
 SESSION_TIMEOUT_SECONDS = 900  # 15 minutes
 
 @app.before_request
@@ -312,12 +294,14 @@ def require_login():
         if binding_error:
             clear_invalid_sso_session(session)
             flash('Your session is no longer valid. Please sign in again.', 'error')
-            return redirect(url_for('login', next=request.path, reason='sso_invalid'))
+            return portal_login_redirect(next_path=request.path, reason='sso_invalid')
+    if session.get('user_id') and not session.get('sso_login'):
+        session.clear()
+        flash('Please sign in through the Portal.', 'info')
+        return portal_login_redirect(next_path=request.path, reason='sso_required')
     if not session.get('user_id'):
         next_url = request.path if request.method == 'GET' else url_for('client_ledger')
-        return redirect(url_for('login', next=next_url))
-    if endpoint != 'force_password_change' and db.has_temporary_password(session.get('user_id')):
-        return redirect(url_for('force_password_change'))
+        return portal_login_redirect(next_path=next_url)
     session.permanent = True
     last = session.get('_last_activity', time())
     now = time()
@@ -329,7 +313,7 @@ def require_login():
         except Exception:
             pass
         flash('Session expired due to inactivity. Please log in again.', 'info')
-        return redirect(url_for('login', next=request.path, reason='timeout'))
+        return portal_login_redirect(next_path=request.path, reason='timeout')
     session['_last_activity'] = now
 
 
@@ -358,6 +342,9 @@ def inject_user():
             'max_users': 2,
             'at_limit': False,
         }
+    ctx['portal_url'] = get_portal_base_url()
+    ctx['portal_login_url'] = get_portal_login_url()
+    ctx['portal_forgot_password_url'] = get_portal_forgot_password_url()
     return ctx
 
 
@@ -419,86 +406,28 @@ def override_impact():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """Render login screen and authenticate user. Max 5 attempts, then lockout."""
-    from lib.tenant_auth import resolve_user_for_login
-
-    if session.get('user_id'):
+    """Phase 4E: Ledger is SSO-only — redirect all login attempts to the Portal."""
+    if session.get('user_id') and session.get('sso_login'):
         return redirect(url_for('client_ledger'))
-    if not session.get('user_id'):
-        session.pop('firm_id', None)
-        session.pop('recovery_firm_id', None)
-        session.pop('recovery_user_id', None)
-        session.pop('recovery_username', None)
-    error = None
-    login_locked = False
-    lockout_remaining = None
-    if request.method == 'POST':
-        identifier = (request.form.get('username') or '').strip().lower()
-        password = request.form.get('password') or ''
-        resolved = resolve_user_for_login(identifier)
-        auth_db = db
-        login_username = identifier
-        if resolved:
-            user, firm_id, auth_db = resolved
-            login_username = user['username']
-            locked, _, remaining = auth_db.is_login_locked(login_username)
-        else:
-            locked, _, remaining = db.is_login_locked(identifier)
-        if locked:
-            login_locked = True
-            lockout_remaining = remaining
-            error = f'Account temporarily locked.\nPlease try again in {remaining}.'
-        else:
-            user = None
-            firm_id = None
-            try:
-                if resolved:
-                    candidate, firm_id, auth_db = resolved
-                    if verify_password(candidate['password_hash'], password):
-                        user = candidate
-            except Exception as exc:
-                error = f'Authentication error: {exc}'
-            if user:
-                auth_db.reset_login_attempts(user['user_id'])
-                session.clear()
-                session['user_id'] = user['user_id']
-                session['username'] = user['username']
-                session['role'] = user['role']
-                if firm_id:
-                    session['firm_id'] = firm_id
-                log_audit('Authentication', 'Successful login', details=user['username'],
-                          username=user['username'], role=user['role'])
-                flash(f"Welcome, {user['username']}.", 'success')
-                if auth_db.has_temporary_password(user['user_id']):
-                    return redirect(url_for('force_password_change'))
-                return redirect(request.args.get('next') or url_for('client_ledger'))
-            log_audit('Authentication', 'Failed login', details=identifier or '(empty)',
-                      username=identifier or 'Unknown', role='(failed)')
-            if not error:
-                if resolved:
-                    _, _, auth_db = resolved
-                    msg, is_locked, _, remaining = auth_db.record_failed_login(login_username)
-                else:
-                    msg, is_locked, _, remaining = db.record_failed_login(identifier)
-                error = msg
-                if is_locked:
-                    login_locked = True
-                    lockout_remaining = remaining
-    username_val = request.form.get('username', '').strip() if request.method == 'POST' else ''
-    return render_template('login.html', error=error, login_locked=login_locked,
-                          lockout_remaining=lockout_remaining, username=username_val)
+    session.pop('firm_id', None)
+    session.pop('recovery_firm_id', None)
+    session.pop('recovery_user_id', None)
+    session.pop('recovery_username', None)
+    next_path = request.args.get('next') or request.form.get('next')
+    reason = request.args.get('reason') or ('direct_login_disabled' if request.method == 'POST' else None)
+    return portal_login_redirect(next_path=next_path, reason=reason)
 
 
 @app.route('/logout')
 def logout():
-    """Log out current user."""
+    """Destroy Ledger session and return the user to the Portal."""
     username = session.get('username', 'Unknown')
     role = session.get('role', 'Unknown')
     reason = request.args.get('reason') or 'User logout'
     log_audit('Authentication', 'Logout', details=f"{username} | {reason}", username=username, role=role)
     session.clear()
-    flash('You have been logged out.', 'info')
-    return redirect(url_for('login'))
+    flash('You have been logged out of Ledger.', 'info')
+    return portal_logout_redirect()
 
 
 @app.route('/client-ledger')
@@ -1890,124 +1819,35 @@ def system_health():
 @app.route('/admin/security')
 @require_admin
 def admin_security():
-    """Security page with Admin Recovery Key management."""
-    pending_key = session.pop('pending_recovery_key', None)
-    return render_template('security.html', pending_recovery_key=pending_key)
+    """Security settings — authentication is managed in the Portal (Phase 4E)."""
+    return render_template('security.html')
 
 
 @app.route('/admin/security/generate-recovery-key', methods=['POST'])
 @require_admin
 def admin_generate_recovery_key():
-    """Generate a new admin recovery key for the authenticated admin session."""
-    user_id = session.get('user_id')
-    user = db.get_user_by_id(user_id) if user_id else None
-    if not user:
-        flash('Session expired. Please log in again.', 'error')
-        return redirect(url_for('admin_security'))
-    key = generate_recovery_key()
-    key_hash = hash_recovery_key(key)
-    db.set_admin_recovery_key_hash(user_id, key_hash)
-    session['pending_recovery_key'] = key
-    username = user.get('username') or session.get('username', 'admin')
-    log_audit(
-        'Security',
-        'Recovery key generated',
-        record_id=str(user_id),
-        details=f'{username} generated a new recovery key',
-    )
-    flash('New recovery key generated. Save it securely — it will not be shown again.', 'info')
-    from_page = request.form.get('from_page', '')
-    if from_page == 'user_management':
-        return redirect(url_for('user_management'))
-    return redirect(url_for('admin_security'))
+    """Phase 4E: recovery keys removed — redirect to Portal."""
+    flash('Password recovery is managed in the Portal.', 'info')
+    return portal_forgot_password_redirect()
 
 
 @app.route('/admin/security/recovery-key-ack', methods=['POST'])
 @require_admin
 def admin_recovery_key_ack():
-    """Acknowledge that user has saved the recovery key. Clears session."""
-    session.pop('pending_recovery_key', None)
-    flash('Recovery key acknowledged. Store it securely offline.', 'success')
-    if request.form.get('next') == 'user_management':
-        return redirect(url_for('user_management'))
+    """Phase 4E: recovery keys removed — redirect to security page."""
     return redirect(url_for('admin_security'))
 
 
 @app.route('/admin/recovery', methods=['GET', 'POST'])
 def admin_recovery():
-    """Admin recovery form: username + recovery key. Max 3 attempts. Key is one-time use only."""
-    from lib.tenant_auth import resolve_admin_for_recovery
-
-    MAX_ATTEMPTS = 3
-    if request.method == 'POST':
-        identifier = (request.form.get('username') or '').strip().lower()
-        recovery_key = (request.form.get('recovery_key') or '').strip().upper().replace(' ', '-')
-        resolved = resolve_admin_for_recovery(identifier)
-        if not resolved:
-            flash('Invalid username or recovery key.', 'error')
-            return render_template('admin_recovery.html')
-        admin, firm_id, auth_db = resolved
-        attempts = admin.get('admin_recovery_attempts') or 0
-        if attempts >= MAX_ATTEMPTS:
-            flash('Maximum recovery attempts exceeded. Please try again later or contact support.', 'error')
-            return render_template('admin_recovery.html')
-        key_hash = admin.get('admin_recovery_key_hash')
-        if not key_hash or auth_db.is_admin_recovery_key_used(admin['user_id']):
-            flash('Recovery key is invalid or already used.', 'error')
-            return render_template('admin_recovery.html')
-        if not verify_recovery_key(key_hash, recovery_key):
-            attempts += 1
-            auth_db.update_admin_recovery_attempt(
-                admin['user_id'], attempts, datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
-            remaining = MAX_ATTEMPTS - attempts
-            flash(f'Invalid username or recovery key. {remaining} attempt(s) remaining.', 'error')
-            log_audit('Security', 'Recovery key verification failed', details=admin['username'])
-            return render_template('admin_recovery.html')
-        session['recovery_user_id'] = admin['user_id']
-        session['recovery_username'] = admin['username']
-        if firm_id:
-            session['recovery_firm_id'] = firm_id
-        return redirect(url_for('admin_recovery_reset'))
-    return render_template('admin_recovery.html')
+    """Phase 4E: admin recovery removed — redirect to Portal forgot password."""
+    return portal_forgot_password_redirect()
 
 
 @app.route('/admin/recovery/reset', methods=['GET', 'POST'])
 def admin_recovery_reset():
-    """One-time password reset page. Requires valid recovery session."""
-    user_id = session.get('recovery_user_id')
-    username = session.get('recovery_username')
-    if not user_id or not username:
-        flash('Recovery session expired or invalid. Please start recovery again.', 'error')
-        return redirect(url_for('admin_recovery'))
-    if request.method == 'POST':
-        new_password = request.form.get('new_password') or ''
-        confirm_password = request.form.get('confirm_password') or ''
-        if not new_password:
-            flash('Password is required.', 'error')
-            return render_template('admin_recovery_reset.html', username=username)
-        if new_password != confirm_password:
-            flash('Passwords do not match.', 'error')
-            return render_template('admin_recovery_reset.html', username=username)
-        if len(new_password) < 3:
-            flash('Password must be at least 3 characters.', 'error')
-            return render_template('admin_recovery_reset.html', username=username)
-        password_hash = generate_password_hash(new_password, method='scrypt')
-        db.update_user_password(user_id, password_hash)
-        db.set_admin_recovery_key_hash(user_id, None)
-        recovery_firm_id = session.get('recovery_firm_id')
-        session.pop('recovery_user_id', None)
-        session.pop('recovery_username', None)
-        session.pop('recovery_firm_id', None)
-        session.clear()
-        session['user_id'] = user_id
-        session['username'] = username
-        session['role'] = 'admin'
-        if recovery_firm_id:
-            session['firm_id'] = recovery_firm_id
-        log_audit('Security', 'Password reset via recovery key', record_id=str(user_id), details=username)
-        flash('Password reset successfully. You are now logged in.', 'success')
-        return redirect(url_for('client_ledger'))
-    return render_template('admin_recovery_reset.html', username=username)
+    """Phase 4E: admin recovery reset removed — redirect to Portal."""
+    return portal_forgot_password_redirect()
 
 
 @app.route('/user-management', methods=['GET'])
@@ -2018,78 +1858,35 @@ def user_management():
 
     users = db.get_billable_users_for_management()
     package_usage = package_usage_summary(db, session)
-    recovery_key_set = any(
-        (db.get_user_by_id(u['user_id']) or {}).get('admin_recovery_key_hash')
-        for u in users if u.get('role') == 'admin'
+    return render_template(
+        'user_management.html',
+        users=users,
+        current_user_id=session.get('user_id'),
+        package_usage=package_usage,
     )
-    pending_recovery_key = session.pop('pending_recovery_key', None)
-    return render_template('user_management.html', users=users, recovery_key_set=recovery_key_set,
-                          current_user_id=session.get('user_id'),
-                          pending_recovery_key=pending_recovery_key,
-                          package_usage=package_usage)
 
 
 @app.route('/user-management/add-user', methods=['POST'])
 @require_admin
 def user_management_add_user():
-    """Create new user with temporary password."""
-    from lib.firm_package import check_user_limit
-
-    limit_error = check_user_limit(db, session)
-    if limit_error:
-        flash(limit_error, 'error')
-        return redirect(url_for('user_management'))
-
-    name = (request.form.get('name') or '').strip()
-    username = (request.form.get('username') or '').strip().lower()
-    role = request.form.get('role') or 'staff'
-    temp_password = request.form.get('temp_password') or ''
-    if not username:
-        flash('Username is required.', 'error')
-        return redirect(url_for('user_management'))
-    if not temp_password or len(temp_password) < 3:
-        flash('Temporary password must be at least 3 characters.', 'error')
-        return redirect(url_for('user_management'))
-    if role not in ('admin', 'staff'):
-        role = 'staff'
-    existing = db.get_user_by_username(username)
-    if existing:
-        flash(f'Username "{username}" already exists.', 'error')
-        return redirect(url_for('user_management'))
-    try:
-        pw_hash = generate_password_hash(temp_password, method='scrypt')
-        uid = db.create_user(username, pw_hash, role, name or None, temporary=True)
-        log_audit('User Management', 'User created', record_id=str(uid), details=f"{username} ({role})")
-        flash('User created successfully. Provide the temporary password securely to the user.', 'success')
-    except Exception as e:
-        flash(f'Error creating user: {e}', 'error')
+    """Phase 4E: user invitations are managed in the Portal."""
+    flash('New users must be invited through the Portal. Ledger does not create passwords.', 'info')
     return redirect(url_for('user_management'))
 
 
 @app.route('/admin/reset-password/<int:user_id>', methods=['POST'])
 @require_admin
 def admin_reset_password(user_id):
-    """Generate password reset link for user. Redirects to dedicated reset-link page."""
-    user = db.get_user_by_id(user_id)
-    if not user:
-        flash('User not found.', 'error')
-        return redirect(url_for('user_management'))
-    token, _ = db.create_reset_token(user_id)
-    log_audit('User Management', 'Password reset link generated', record_id=str(user_id), details=user['username'])
-    return redirect(url_for('user_management_reset_link_page', token=token))
+    """Phase 4E: password reset is managed in the Portal."""
+    flash('Password reset is managed in the Portal.', 'info')
+    return portal_forgot_password_redirect()
 
 
 @app.route('/user-management/reset-link/<token>', methods=['GET'])
 @require_admin
 def user_management_reset_link_page(token):
-    """Dedicated success page showing the generated reset link. Requires valid token."""
-    user = db.get_reset_token_user(token)
-    if not user:
-        flash('Reset link has expired or has already been used.', 'error')
-        return redirect(url_for('user_management'))
-    base_url = request.url_root.rstrip('/')
-    reset_url = f"{base_url}/admin-reset-password/{token}"
-    return render_template('reset_link_generated.html', reset_url=reset_url)
+    """Phase 4E: password reset links removed — redirect to Portal."""
+    return portal_forgot_password_redirect()
 
 
 @app.route('/user-management/change-role/<int:user_id>', methods=['POST'])
@@ -2126,81 +1923,28 @@ def user_management_deactivate(user_id):
 @app.route('/user-management/regenerate-recovery-key', methods=['POST'])
 @require_admin
 def user_management_regenerate_recovery_key():
-    """Redirect to Security page for recovery key generation (same flow)."""
-    return redirect(url_for('admin_security'))
+    """Phase 4E: recovery keys removed — redirect to Portal."""
+    return portal_forgot_password_redirect()
 
 
 @app.route('/admin-reset-password/<token>', methods=['GET', 'POST'])
 def admin_reset_password_page(token):
-    """Password reset page (user-facing). Token expires in 30 minutes, one-time use. Login exempt."""
-    return _handle_password_reset(token)
+    """Phase 4E: Ledger password reset removed — redirect to Portal."""
+    return portal_forgot_password_redirect()
 
 
 @app.route('/reset-password/<token>', methods=['GET'])
 def reset_password(token):
-    """Legacy alias: redirect to admin-reset-password path."""
-    return redirect(url_for('admin_reset_password_page', token=token), code=302)
-
-
-def _handle_password_reset(token):
-    """Shared logic for password reset form and submission."""
-    if request.method == 'POST':
-        new_password = request.form.get('new_password') or ''
-        confirm = request.form.get('confirm_password') or ''
-        if not new_password:
-            flash('Password is required.', 'error')
-            return render_template('reset_password.html', token=token, username=request.form.get('username', ''))
-        if new_password != confirm:
-            flash('Passwords do not match.', 'error')
-            return render_template('reset_password.html', token=token, username=request.form.get('username', ''))
-        if len(new_password) < 3:
-            flash('Password must be at least 3 characters.', 'error')
-            return render_template('reset_password.html', token=token, username=request.form.get('username', ''))
-        user = db.get_reset_token_user(token)
-        if not user:
-            flash('Reset link has expired or has already been used.', 'error')
-            return render_template('reset_password.html', token=token, username='')
-        password_hash = generate_password_hash(new_password, method='scrypt')
-        db.update_user_password(user['user_id'], password_hash)
-        db.mark_reset_token_used(token)
-        db.clear_temporary_password(user['user_id'])
-        log_audit('Security', 'Password reset via link', record_id=str(user['user_id']), details=user['username'])
-        flash('Password reset successfully. You can now log in with your new password.', 'success')
-        return redirect(url_for('login'))
-    user = db.get_reset_token_user(token)
-    if not user:
-        flash('Reset link has expired or has already been used.', 'error')
-        return render_template('reset_password.html', token=token, username='')
-    return render_template('reset_password.html', token=token, username=user['username'])
+    """Phase 4E: legacy reset alias — redirect to Portal."""
+    return portal_forgot_password_redirect()
 
 
 @app.route('/force-password-change', methods=['GET', 'POST'])
 def force_password_change():
-    """Force password change for users with temporary password."""
-    if not session.get('user_id'):
-        return redirect(url_for('login'))
-    if not db.has_temporary_password(session['user_id']):
-        return redirect(url_for('client_ledger'))
-    if request.method == 'POST':
-        new_password = request.form.get('new_password') or ''
-        confirm = request.form.get('confirm_password') or ''
-        if not new_password:
-            flash('Password is required.', 'error')
-            return render_template('force_password_change.html')
-        if new_password != confirm:
-            flash('Passwords do not match.', 'error')
-            return render_template('force_password_change.html')
-        if len(new_password) < 3:
-            flash('Password must be at least 3 characters.', 'error')
-            return render_template('force_password_change.html')
-        user_id = session['user_id']
-        password_hash = generate_password_hash(new_password, method='scrypt')
-        db.update_user_password(user_id, password_hash)
-        db.clear_temporary_password(user_id)
-        log_audit('Security', 'Temporary password changed', record_id=str(user_id), details=session.get('username'))
-        flash('Your password has been updated successfully.', 'success')
-        return redirect(url_for('client_ledger'))
-    return render_template('force_password_change.html')
+    """Phase 4E: password changes are managed in the Portal."""
+    session.clear()
+    flash('Password management is handled in the Portal.', 'info')
+    return portal_login_redirect(reason='password_portal_only')
 
 
 @app.route('/system-backups/usb', methods=['POST'])
