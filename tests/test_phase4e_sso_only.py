@@ -10,7 +10,6 @@ from app import app
 from db_router import get_db_for_firm, reset_router
 from lib.portal_auth import (
     get_portal_dashboard_url,
-    get_portal_forgot_password_url,
     get_portal_login_url,
 )
 from nexal_platform.provision import provision_firm
@@ -100,13 +99,11 @@ def test_scenario2_login_clears_stale_session_keys(phase4e_env):
     client = app.test_client()
     with client.session_transaction() as sess:
         sess["firm_id"] = "stale-firm"
-        sess["recovery_firm_id"] = "stale-recovery"
 
     response = client.get("/login")
     assert response.status_code == 302
     with client.session_transaction() as sess:
         assert "firm_id" not in sess
-        assert "recovery_firm_id" not in sess
 
 
 # Scenario 3: Ledger logout redirects to Portal dashboard
@@ -128,10 +125,10 @@ def test_scenario3_sso_logout_redirects_to_portal(phase4e_env):
     assert response.location == f"{PORTAL_TEST_URL}/portal"
 
 
-# Scenario 4: Password reset handled by Portal only
-def test_scenario4_recovery_routes_redirect_to_portal_forgot_password(phase4e_env):
+# Scenario 4: Legacy auth routes redirect to Portal (no Ledger auth UI)
+def test_scenario4_legacy_auth_routes_redirect_to_portal_login(phase4e_env):
     client = app.test_client()
-    forgot = get_portal_forgot_password_url()
+    login_base = get_portal_login_url().split("?")[0]
 
     for path, method, data in [
         ("/admin/recovery", "GET", None),
@@ -139,21 +136,51 @@ def test_scenario4_recovery_routes_redirect_to_portal_forgot_password(phase4e_en
         ("/admin/recovery/reset", "GET", None),
         ("/admin-reset-password/fake-token", "GET", None),
         ("/reset-password/fake-token", "GET", None),
+        ("/force-password-change", "GET", None),
     ]:
         if method == "GET":
             response = client.get(path)
         else:
             response = client.post(path, data=data)
         assert response.status_code == 302, path
-        assert response.location == forgot
+        assert response.location.startswith(login_base)
 
 
-def test_scenario4_force_password_change_redirects_to_portal_login(phase4e_env):
+def test_scenario4_force_password_change_clears_session(phase4e_env):
     client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = 99
+        sess["sso_login"] = True
     response = client.get("/force-password-change")
     assert response.status_code == 302
     assert f"{PORTAL_TEST_URL}/login" in response.location
-    assert "password_portal_only" in response.location
+    assert "legacy_route" in response.location
+    with client.session_transaction() as sess:
+        assert not sess.get("user_id")
+
+
+def test_security_page_is_portal_only(phase4e_env):
+    client, _, _, _ = _provision_and_sso()
+    response = client.get("/admin/security")
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert "Authentication and account management are handled through the Nexal Legal Portal." in html
+    assert "Open Portal" in html
+    assert "Forgot" not in html
+    assert "Recovery" not in html
+    assert "Reset Password" not in html
+
+
+def test_user_management_page_has_no_password_ui(phase4e_env):
+    client, _, _, _ = _provision_and_sso()
+    response = client.get("/user-management")
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert "User invitations and account management are handled through the Nexal Legal Portal." in html
+    assert "Manage Users in Portal" in html
+    assert "temp_password" not in html
+    assert "Reset Password" not in html
+    assert "recovery" not in html.lower()
 
 
 # Scenario 5: Invited user architecture — Ledger rejects local user creation

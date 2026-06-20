@@ -33,11 +33,6 @@ def get_portal_dashboard_url() -> str:
     return f"{get_portal_base_url()}/portal"
 
 
-def get_portal_forgot_password_url() -> str:
-    """Full URL for Portal forgot-password workflow."""
-    return f"{get_portal_base_url()}/forgot-password"
-
-
 def portal_login_redirect(next_path: str = None, reason: str = None):
     """Flask redirect to Portal login."""
     from flask import redirect
@@ -50,10 +45,3 @@ def portal_logout_redirect():
     from flask import redirect
 
     return redirect(get_portal_dashboard_url())
-
-
-def portal_forgot_password_redirect():
-    """Flask redirect to Portal forgot-password page."""
-    from flask import redirect
-
-    return redirect(get_portal_forgot_password_url())

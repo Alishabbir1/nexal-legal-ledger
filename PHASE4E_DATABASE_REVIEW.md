@@ -79,10 +79,10 @@ Table may be empty on SSO-only firms. Safe to drop in a future migration.
 | Route | Replacement |
 |-------|-------------|
 | `GET/POST /login` | Redirect → Portal `/login` |
-| `/admin/recovery` | Redirect → Portal `/forgot-password` |
-| `/admin/recovery/reset` | Redirect → Portal `/forgot-password` |
-| `/admin-reset-password/<token>` | Redirect → Portal `/forgot-password` |
-| `/reset-password/<token>` | Redirect → Portal `/forgot-password` |
+| `/admin/recovery` | Redirect → Portal `/login` |
+| `/admin/recovery/reset` | Redirect → Portal `/login` |
+| `/admin-reset-password/<token>` | Redirect → Portal `/login` |
+| `/reset-password/<token>` | Redirect → Portal `/login` |
 | `/force-password-change` | Redirect → Portal `/login` |
 | Recovery key generation | Removed — Portal only |
 | Ledger user invite with temp password | Disabled — Portal invitations |

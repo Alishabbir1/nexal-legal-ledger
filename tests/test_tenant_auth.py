@@ -116,14 +116,14 @@ def test_login_post_redirects_to_portal(tenant_auth_env):
     assert "direct_login_disabled" in response.location
 
 
-def test_admin_recovery_redirects_to_portal_forgot_password(tenant_auth_env):
+def test_admin_recovery_redirects_to_portal_login(tenant_auth_env):
     client = app.test_client()
     response = client.post(
         "/admin/recovery",
         data={"username": "nobody", "recovery_key": "SRN-AAAA-BBBB-CCCC"},
     )
     assert response.status_code == 302
-    assert response.location == "http://portal.test/forgot-password"
+    assert "portal.test/login" in response.location
 
 
 def test_direct_login_post_no_longer_authenticates(tenant_auth_env):

@@ -3,7 +3,11 @@
 {% block content %}
 <div class="card">
     <h2 style="margin-bottom: 8px;">User Management</h2>
-    <p style="margin-bottom: 20px;">Manage Ledger users. New users must be invited through the Portal.</p>
+
+    <p style="margin-bottom: 20px; color: #555; line-height: 1.55;">
+        User invitations and account management are handled through the Nexal Legal Portal.
+    </p>
+    <a href="{{ portal_dashboard_url }}" class="btn" style="margin-bottom: 28px;">Manage Users in Portal</a>
 
     <p style="margin-bottom: 15px; color: #555;">
         Package: <strong>{{ package_usage.label }}</strong>
@@ -15,12 +19,6 @@
     </p>
     {% endif %}
 
-    <p style="margin-bottom: 20px; color: #555; line-height: 1.55;">
-        To invite a new user, use the
-        <a href="{{ portal_url }}/portal" style="color: rgb(0, 0, 238); text-decoration: underline;">Portal dashboard</a>.
-        Password reset and account activation are also managed in the Portal.
-    </p>
-
     <table>
         <thead>
             <tr>
@@ -28,7 +26,6 @@
                 <th>Username / Email</th>
                 <th>Role</th>
                 <th>Status</th>
-                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -41,18 +38,6 @@
                     <span class="status-badge {% if u.active %}status-cleared{% else %}status-declined{% endif %}">
                         {{ 'Active' if u.active else 'Deactivated' }}
                     </span>
-                </td>
-                <td style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
-                    {% if u.user_id != current_user_id and u.active %}
-                    {% if u.role != 'admin' %}
-                    <form method="POST" action="{{ url_for('user_management_change_role', user_id=u.user_id) }}" style="display: inline;">
-                        <button type="submit" class="btn btn-secondary btn-sm">→ Admin</button>
-                    </form>
-                    {% endif %}
-                    <form method="POST" action="{{ url_for('user_management_deactivate', user_id=u.user_id) }}" style="display: inline;">
-                        <button type="submit" class="btn btn-danger btn-sm">Deactivate</button>
-                    </form>
-                    {% endif %}
                 </td>
             </tr>
             {% endfor %}

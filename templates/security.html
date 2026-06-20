@@ -1,23 +1,12 @@
 {% extends "base.html" %}
 
-{% block page_title %}Admin Security{% endblock %}
+{% block page_title %}Account{% endblock %}
 
 {% block content %}
 <div class="card">
-    <h2 style="margin:0 0 5px;">Admin Security</h2>
-    <p style="margin:0 0 28px; color:var(--text-secondary); font-size:13.5px;">
-        Authentication is managed in the Nexal Legal Portal. Ledger uses single sign-on (SSO) only.
+    <p style="margin:0 0 24px; color:var(--text-secondary); font-size:14px; line-height:1.6; max-width:620px;">
+        Authentication and account management are handled through the Nexal Legal Portal.
     </p>
-
-    <h3 style="margin:0 0 8px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted);">Portal Sign-In</h3>
-    <p style="margin:0 0 20px; color:var(--text-secondary); font-size:13.5px; line-height:1.6; max-width:620px;">
-        Sign in, sign out, password changes, and password recovery are handled exclusively in the Portal.
-        Launch Ledger from your Portal dashboard to access this application.
-    </p>
-
-    <div style="display:flex; gap:12px; flex-wrap:wrap;">
-        <a href="{{ portal_login_url }}" class="btn">Open Portal Sign-In</a>
-        <a href="{{ portal_forgot_password_url }}" class="btn btn-secondary">Forgot Password (Portal)</a>
-    </div>
+    <a href="{{ portal_dashboard_url }}" class="btn">Open Portal</a>
 </div>
 {% endblock %}

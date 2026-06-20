@@ -1,8 +1,8 @@
 """
-Resolve users across legacy and per-firm tenant databases for direct login and recovery.
+Resolve users across legacy and per-firm tenant databases for internal lookup.
 
-SSO users and recovery keys live in isolated tenant databases. Routes that run
-without an SSO session (e.g. /login, /admin/recovery) must search those databases
+SSO users live in isolated tenant databases. Legacy helpers remain for
+provisioning and internal resolution only — Ledger has no direct login UI.
 instead of only the legacy default database.
 """
 import logging

@@ -15,9 +15,8 @@ from typing import Tuple, Optional, Dict
 
 from lib.portal_auth import (
     get_portal_base_url,
-    get_portal_forgot_password_url,
+    get_portal_dashboard_url,
     get_portal_login_url,
-    portal_forgot_password_redirect,
     portal_login_redirect,
     portal_logout_redirect,
 )
@@ -98,10 +97,8 @@ def _resolve_active_db():
     cached = getattr(g, "_nexal_active_db", None)
     if cached is not None:
         return cached
-    firm_id = session.get("firm_id") or session.get("recovery_firm_id")
-    # Only route to tenant DB for authenticated or active recovery sessions.
-    # Stale firm_id cookies must not break public pages such as /login.
-    if firm_id and (session.get("user_id") or session.get("recovery_user_id")):
+    firm_id = session.get("firm_id")
+    if firm_id and session.get("user_id"):
         from db_router import get_db_for_firm
         try:
             g._nexal_active_db = get_db_for_firm(firm_id)
@@ -343,8 +340,7 @@ def inject_user():
             'at_limit': False,
         }
     ctx['portal_url'] = get_portal_base_url()
-    ctx['portal_login_url'] = get_portal_login_url()
-    ctx['portal_forgot_password_url'] = get_portal_forgot_password_url()
+    ctx['portal_dashboard_url'] = get_portal_dashboard_url()
     return ctx
 
 
@@ -410,9 +406,6 @@ def login():
     if session.get('user_id') and session.get('sso_login'):
         return redirect(url_for('client_ledger'))
     session.pop('firm_id', None)
-    session.pop('recovery_firm_id', None)
-    session.pop('recovery_user_id', None)
-    session.pop('recovery_username', None)
     next_path = request.args.get('next') or request.form.get('next')
     reason = request.args.get('reason') or ('direct_login_disabled' if request.method == 'POST' else None)
     return portal_login_redirect(next_path=next_path, reason=reason)
@@ -1819,35 +1812,30 @@ def system_health():
 @app.route('/admin/security')
 @require_admin
 def admin_security():
-    """Security settings — authentication is managed in the Portal (Phase 4E)."""
+    """Account information — authentication is managed in the Portal."""
     return render_template('security.html')
 
 
 @app.route('/admin/security/generate-recovery-key', methods=['POST'])
 @require_admin
 def admin_generate_recovery_key():
-    """Phase 4E: recovery keys removed — redirect to Portal."""
-    flash('Password recovery is managed in the Portal.', 'info')
-    return portal_forgot_password_redirect()
+    return redirect(url_for('admin_security'))
 
 
 @app.route('/admin/security/recovery-key-ack', methods=['POST'])
 @require_admin
 def admin_recovery_key_ack():
-    """Phase 4E: recovery keys removed — redirect to security page."""
     return redirect(url_for('admin_security'))
 
 
 @app.route('/admin/recovery', methods=['GET', 'POST'])
 def admin_recovery():
-    """Phase 4E: admin recovery removed — redirect to Portal forgot password."""
-    return portal_forgot_password_redirect()
+    return portal_login_redirect(reason='legacy_route')
 
 
 @app.route('/admin/recovery/reset', methods=['GET', 'POST'])
 def admin_recovery_reset():
-    """Phase 4E: admin recovery reset removed — redirect to Portal."""
-    return portal_forgot_password_redirect()
+    return portal_login_redirect(reason='legacy_route')
 
 
 @app.route('/user-management', methods=['GET'])
@@ -1869,24 +1857,20 @@ def user_management():
 @app.route('/user-management/add-user', methods=['POST'])
 @require_admin
 def user_management_add_user():
-    """Phase 4E: user invitations are managed in the Portal."""
-    flash('New users must be invited through the Portal. Ledger does not create passwords.', 'info')
+    flash('User invitations and account management are handled through the Nexal Legal Portal.', 'info')
     return redirect(url_for('user_management'))
 
 
 @app.route('/admin/reset-password/<int:user_id>', methods=['POST'])
 @require_admin
 def admin_reset_password(user_id):
-    """Phase 4E: password reset is managed in the Portal."""
-    flash('Password reset is managed in the Portal.', 'info')
-    return portal_forgot_password_redirect()
+    return redirect(url_for('user_management'))
 
 
 @app.route('/user-management/reset-link/<token>', methods=['GET'])
 @require_admin
 def user_management_reset_link_page(token):
-    """Phase 4E: password reset links removed — redirect to Portal."""
-    return portal_forgot_password_redirect()
+    return portal_login_redirect(reason='legacy_route')
 
 
 @app.route('/user-management/change-role/<int:user_id>', methods=['POST'])
@@ -1923,28 +1907,23 @@ def user_management_deactivate(user_id):
 @app.route('/user-management/regenerate-recovery-key', methods=['POST'])
 @require_admin
 def user_management_regenerate_recovery_key():
-    """Phase 4E: recovery keys removed — redirect to Portal."""
-    return portal_forgot_password_redirect()
+    return redirect(url_for('user_management'))
 
 
 @app.route('/admin-reset-password/<token>', methods=['GET', 'POST'])
 def admin_reset_password_page(token):
-    """Phase 4E: Ledger password reset removed — redirect to Portal."""
-    return portal_forgot_password_redirect()
+    return portal_login_redirect(reason='legacy_route')
 
 
 @app.route('/reset-password/<token>', methods=['GET'])
 def reset_password(token):
-    """Phase 4E: legacy reset alias — redirect to Portal."""
-    return portal_forgot_password_redirect()
+    return portal_login_redirect(reason='legacy_route')
 
 
 @app.route('/force-password-change', methods=['GET', 'POST'])
 def force_password_change():
-    """Phase 4E: password changes are managed in the Portal."""
     session.clear()
-    flash('Password management is handled in the Portal.', 'info')
-    return portal_login_redirect(reason='password_portal_only')
+    return portal_login_redirect(reason='legacy_route')
 
 
 @app.route('/system-backups/usb', methods=['POST'])
