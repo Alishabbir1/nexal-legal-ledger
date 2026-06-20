@@ -1878,6 +1878,9 @@ def admin_security():
 @require_admin
 def admin_generate_recovery_key():
     """Verify admin password, generate new recovery key. Same lockout as login (5 attempts)."""
+    from lib.portal_password_sync import prepare_sso_password_for_verification
+    from lib.password_verification import verify_password_detailed
+
     password = request.form.get('password') or ''
     user_id = session.get('user_id')
     user = db.get_user_by_id(user_id) if user_id else None
@@ -1888,7 +1891,13 @@ def admin_generate_recovery_key():
     if locked:
         flash(f'Account temporarily locked. Please try again in {remaining}.', 'error')
         return redirect(url_for('admin_security'))
-    if not verify_password(user['password_hash'], password):
+    prepare_sso_password_for_verification(db, session)
+    user = db.get_user_by_id(user_id)
+    ok, system_error = verify_password_detailed(user['password_hash'], password)
+    if system_error:
+        flash(system_error, 'error')
+        return redirect(url_for('admin_security'))
+    if not ok:
         msg, is_locked, remaining = db.record_failed_recovery_confirm(user_id)
         flash(msg, 'error')
         if is_locked:

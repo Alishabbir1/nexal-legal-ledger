@@ -250,10 +250,17 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
         platform_firm_id,
         ledger_role=ledger_user["role"],
     )
+    portal_password_hash = jwt_payload.get("password_hash")
+    if portal_password_hash:
+        session_data["portal_password_hash"] = portal_password_hash
     for key, value in session_data.items():
         flask_session[key] = value
     flask_session["sso_established_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     tenant_db = get_db_for_firm(platform_firm_id)
+    from lib.portal_password_sync import on_sso_login_password_sync
+
+    on_sso_login_password_sync(tenant_db, ledger_user["user_id"], portal_password_hash)
+    tenant_db.reset_recovery_confirm_attempts(ledger_user["user_id"])
     tier = resolve_firm_tier(session_data, tenant_db)
     cache_tier_in_tenant_db(tenant_db, tier)
     return session_data
@@ -271,6 +278,7 @@ def clear_sso_session(flask_session) -> None:
         "sso_login",
         "logged_in",
         "sso_established_at",
+        "portal_password_hash",
     ):
         flask_session.pop(key, None)
 

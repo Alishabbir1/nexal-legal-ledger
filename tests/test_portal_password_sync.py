@@ -9,7 +9,12 @@ from werkzeug.security import generate_password_hash
 
 from db_router import get_db_for_firm, reset_router
 from lib.password_verification import verify_password
-from lib.portal_password_sync import is_valid_password_hash, sync_portal_password_hash
+from lib.portal_password_sync import (
+    force_sync_portal_password_hash,
+    is_valid_password_hash,
+    prepare_sso_password_for_verification,
+    sync_portal_password_hash,
+)
 from nexal_platform.provision import provision_firm
 from portal_bridge import ensure_portal_user_in_ledger
 from sso_auth import generate_sso_token
@@ -190,3 +195,109 @@ def test_recovery_key_accepts_portal_bcrypt_password_hash(isolated_env):
     assert gen.status_code == 302
     with client.session_transaction() as sess:
         assert sess.get("pending_recovery_key", "").startswith("SRN-")
+
+
+def test_sso_login_clears_recovery_lockout_and_repairs_stale_hash(isolated_env):
+    """Locked SSO users are repaired on re-launch; stale random hashes are overwritten."""
+    from app import app
+
+    portal_firm_id = str(uuid.uuid4())
+    portal_user_id = str(uuid.uuid4())
+    portal_password = "LockoutRepair99!"
+    portal_hash = bcrypt.hashpw(
+        portal_password.encode("utf-8"),
+        bcrypt.gensalt(rounds=12),
+    ).decode("utf-8")
+
+    provision_firm(
+        name="Lockout Firm",
+        slug=f"lockout-{uuid.uuid4().hex[:8]}",
+        portal_firm_id=portal_firm_id,
+    )
+
+    token = generate_sso_token(
+        user_id=portal_user_id,
+        email="lockout@example.com",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        username="lockout",
+        extra={"password_hash": portal_hash},
+    )
+
+    client = app.test_client()
+    assert client.get("/auth/sso?token=" + token).status_code == 302
+
+    with client.session_transaction() as sess:
+        firm_id = sess["firm_id"]
+        user_id = sess["user_id"]
+
+    db = get_db_for_firm(firm_id)
+    # Simulate legacy random hash that was never synced
+    db.update_user_password(user_id, generate_password_hash("random-unknown", method="scrypt"))
+    for _ in range(5):
+        db.record_failed_recovery_confirm(user_id)
+    locked, _, _ = db.is_recovery_confirm_locked(user_id)
+    assert locked is True
+
+    # Re-launch via SSO repairs hash and clears lockout
+    token2 = generate_sso_token(
+        user_id=portal_user_id,
+        email="lockout@example.com",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        username="lockout",
+        extra={"password_hash": portal_hash},
+    )
+    assert client.get("/auth/sso?token=" + token2).status_code == 302
+
+    locked, _, _ = db.is_recovery_confirm_locked(user_id)
+    assert locked is False
+    user = db.get_user_by_id(user_id)
+    assert verify_password(user["password_hash"], portal_password)
+
+    gen = client.post(
+        "/admin/security/generate-recovery-key",
+        data={"password": portal_password},
+    )
+    assert gen.status_code == 302
+    with client.session_transaction() as sess:
+        assert sess.get("pending_recovery_key", "").startswith("SRN-")
+
+
+def test_prepare_sso_password_for_verification_repairs_from_session(isolated_env):
+    portal_firm_id = str(uuid.uuid4())
+    portal_user_id = str(uuid.uuid4())
+    portal_password = "SessionRepair88!"
+    portal_hash = bcrypt.hashpw(
+        portal_password.encode("utf-8"),
+        bcrypt.gensalt(rounds=12),
+    ).decode("utf-8")
+
+    provision_firm(
+        name="Session Repair Firm",
+        slug=f"srepair-{uuid.uuid4().hex[:8]}",
+        portal_firm_id=portal_firm_id,
+    )
+    payload = {
+        "sub": portal_user_id,
+        "email": "repair@example.com",
+        "role": "firm_admin",
+        "username": "repair",
+        "password_hash": portal_hash,
+    }
+    firm = __import__(
+        "nexal_platform.portal_link",
+        fromlist=["resolve_active_portal_firm"],
+    ).resolve_active_portal_firm(portal_firm_id, payload)
+    user = ensure_portal_user_in_ledger(payload, firm["id"])
+    db = get_db_for_firm(firm["id"])
+    db.update_user_password(user["user_id"], generate_password_hash("wrong-stored", method="scrypt"))
+
+    session = {
+        "sso_login": True,
+        "user_id": user["user_id"],
+        "portal_password_hash": portal_hash,
+    }
+    prepare_sso_password_for_verification(db, session)
+    ledger_user = db.get_user_by_id(user["user_id"])
+    assert verify_password(ledger_user["password_hash"], portal_password)
