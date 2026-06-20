@@ -88,15 +88,15 @@ _legacy_db.initialize_security_columns()
 
 
 def _resolve_active_db():
-    """Route database access to firm tenant DB for SSO sessions."""
+    """Route database access to firm tenant DB when session is firm-scoped."""
     from flask import g, has_request_context, session
     if not has_request_context():
         return _legacy_db
     cached = getattr(g, "_nexal_active_db", None)
     if cached is not None:
         return cached
-    firm_id = session.get("firm_id")
-    if firm_id and session.get("sso_login"):
+    firm_id = session.get("firm_id") or session.get("recovery_firm_id")
+    if firm_id:
         from db_router import get_db_for_firm
         g._nexal_active_db = get_db_for_firm(firm_id)
         return g._nexal_active_db
@@ -415,41 +415,61 @@ def override_impact():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     """Render login screen and authenticate user. Max 5 attempts, then lockout."""
+    from lib.tenant_auth import resolve_user_for_login
+
     if session.get('user_id'):
         return redirect(url_for('client_ledger'))
     error = None
     login_locked = False
     lockout_remaining = None
     if request.method == 'POST':
-        username = (request.form.get('username') or '').strip().lower()
+        identifier = (request.form.get('username') or '').strip().lower()
         password = request.form.get('password') or ''
-        locked, _, remaining = db.is_login_locked(username)
+        resolved = resolve_user_for_login(identifier, session.get('firm_id'))
+        auth_db = db
+        login_username = identifier
+        if resolved:
+            user, firm_id, auth_db = resolved
+            login_username = user['username']
+            locked, _, remaining = auth_db.is_login_locked(login_username)
+        else:
+            locked, _, remaining = db.is_login_locked(identifier)
         if locked:
             login_locked = True
             lockout_remaining = remaining
             error = f'Account temporarily locked.\nPlease try again in {remaining}.'
         else:
+            user = None
+            firm_id = None
             try:
-                user = db.verify_user_credentials(username, password)
+                if resolved:
+                    candidate, firm_id, auth_db = resolved
+                    if verify_password(candidate['password_hash'], password):
+                        user = candidate
             except Exception as exc:
-                user = None
                 error = f'Authentication error: {exc}'
             if user:
-                db.reset_login_attempts(user['user_id'])
+                auth_db.reset_login_attempts(user['user_id'])
                 session.clear()
                 session['user_id'] = user['user_id']
                 session['username'] = user['username']
                 session['role'] = user['role']
+                if firm_id:
+                    session['firm_id'] = firm_id
                 log_audit('Authentication', 'Successful login', details=user['username'],
                           username=user['username'], role=user['role'])
                 flash(f"Welcome, {user['username']}.", 'success')
-                if db.has_temporary_password(user['user_id']):
+                if auth_db.has_temporary_password(user['user_id']):
                     return redirect(url_for('force_password_change'))
                 return redirect(request.args.get('next') or url_for('client_ledger'))
-            log_audit('Authentication', 'Failed login', details=username or '(empty)',
-                      username=username or 'Unknown', role='(failed)')
+            log_audit('Authentication', 'Failed login', details=identifier or '(empty)',
+                      username=identifier or 'Unknown', role='(failed)')
             if not error:
-                msg, is_locked, _, remaining = db.record_failed_login(username)
+                if resolved:
+                    _, _, auth_db = resolved
+                    msg, is_locked, _, remaining = auth_db.record_failed_login(login_username)
+                else:
+                    msg, is_locked, _, remaining = db.record_failed_login(identifier)
                 error = msg
                 if is_locked:
                     login_locked = True
@@ -1906,32 +1926,38 @@ def admin_recovery_key_ack():
 @app.route('/admin/recovery', methods=['GET', 'POST'])
 def admin_recovery():
     """Admin recovery form: username + recovery key. Max 3 attempts. Key is one-time use only."""
+    from lib.tenant_auth import resolve_admin_for_recovery
+
     MAX_ATTEMPTS = 3
     if request.method == 'POST':
-        username = (request.form.get('username') or '').strip().lower()
+        identifier = (request.form.get('username') or '').strip().lower()
         recovery_key = (request.form.get('recovery_key') or '').strip().upper().replace(' ', '-')
-        admin = db.get_admin_user_by_username(username)
-        if not admin:
+        hint_firm_id = session.get('firm_id') or session.get('recovery_firm_id')
+        resolved = resolve_admin_for_recovery(identifier, hint_firm_id)
+        if not resolved:
             flash('Invalid username or recovery key.', 'error')
             return render_template('admin_recovery.html')
+        admin, firm_id, auth_db = resolved
         attempts = admin.get('admin_recovery_attempts') or 0
         if attempts >= MAX_ATTEMPTS:
             flash('Maximum recovery attempts exceeded. Please try again later or contact support.', 'error')
             return render_template('admin_recovery.html')
         key_hash = admin.get('admin_recovery_key_hash')
-        if not key_hash or db.is_admin_recovery_key_used(admin['user_id']):
+        if not key_hash or auth_db.is_admin_recovery_key_used(admin['user_id']):
             flash('Recovery key is invalid or already used.', 'error')
             return render_template('admin_recovery.html')
         if not verify_recovery_key(key_hash, recovery_key):
             attempts += 1
-            db.update_admin_recovery_attempt(
+            auth_db.update_admin_recovery_attempt(
                 admin['user_id'], attempts, datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
             remaining = MAX_ATTEMPTS - attempts
             flash(f'Invalid username or recovery key. {remaining} attempt(s) remaining.', 'error')
-            log_audit('Security', 'Recovery key verification failed', details=username)
+            log_audit('Security', 'Recovery key verification failed', details=admin['username'])
             return render_template('admin_recovery.html')
         session['recovery_user_id'] = admin['user_id']
         session['recovery_username'] = admin['username']
+        if firm_id:
+            session['recovery_firm_id'] = firm_id
         return redirect(url_for('admin_recovery_reset'))
     return render_template('admin_recovery.html')
 
@@ -1959,12 +1985,16 @@ def admin_recovery_reset():
         password_hash = generate_password_hash(new_password, method='scrypt')
         db.update_user_password(user_id, password_hash)
         db.set_admin_recovery_key_hash(user_id, None)
+        recovery_firm_id = session.get('recovery_firm_id')
         session.pop('recovery_user_id', None)
         session.pop('recovery_username', None)
+        session.pop('recovery_firm_id', None)
         session.clear()
         session['user_id'] = user_id
         session['username'] = username
         session['role'] = 'admin'
+        if recovery_firm_id:
+            session['firm_id'] = recovery_firm_id
         log_audit('Security', 'Password reset via recovery key', record_id=str(user_id), details=username)
         flash('Password reset successfully. You are now logged in.', 'success')
         return redirect(url_for('client_ledger'))

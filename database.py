@@ -878,6 +878,45 @@ class Database:
         conn.close()
         return dict(row) if row else None
 
+    def get_user_by_login_identifier(self, identifier: str) -> Optional[Dict]:
+        """Return user matching username or email (case-insensitive)."""
+        ident = (identifier or "").strip().lower()
+        if not ident:
+            return None
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM users
+            WHERE lower(username) = ? OR lower(COALESCE(email, '')) = ?
+            LIMIT 1
+            """,
+            (ident, ident),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def get_admin_by_login_identifier(self, identifier: str) -> Optional[Dict]:
+        """Return admin user matching username or email (case-insensitive)."""
+        ident = (identifier or "").strip().lower()
+        if not ident:
+            return None
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM users
+            WHERE role = 'admin'
+              AND (lower(username) = ? OR lower(COALESCE(email, '')) = ?)
+            LIMIT 1
+            """,
+            (ident, ident),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
     def get_user_by_id(self, user_id: int) -> Optional[Dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
