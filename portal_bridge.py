@@ -73,8 +73,11 @@ def resolve_portal_user(
     platform_firm_id: str,
     preferred_username: Optional[str] = None,
     portal_role: Optional[str] = None,
+    password_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Find existing ledger user linked to portal identity."""
+    from lib.portal_password_sync import sync_portal_password_hash
+
     db = get_db_for_firm(platform_firm_id)
     conn = db.get_connection()
     try:
@@ -96,6 +99,7 @@ def resolve_portal_user(
                     """,
                     (row["user_id"],),
                 ).fetchone()
+            sync_portal_password_hash(db, row["user_id"], password_hash)
             return dict(row)
 
         if email:
@@ -130,6 +134,7 @@ def resolve_portal_user(
                         "SELECT user_id, username, role, firm_id, portal_user_id, email FROM users WHERE user_id = ?",
                         (row["user_id"],),
                     ).fetchone()
+                sync_portal_password_hash(db, updated["user_id"], password_hash)
                 return dict(updated)
     finally:
         conn.close()
@@ -142,10 +147,12 @@ def provision_portal_user(
     platform_firm_id: str,
     portal_role: str = "firm_admin",
     preferred_username: Optional[str] = None,
+    password_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a ledger user automatically from portal identity."""
     from flask import has_request_context, session
     from lib.firm_package import check_user_limit, resolve_firm_tier
+    from lib.portal_password_sync import is_valid_password_hash, sync_portal_password_hash
 
     db = get_db_for_firm(platform_firm_id)
     db.initialize_security_columns()
@@ -156,7 +163,10 @@ def provision_portal_user(
 
     username = _derive_username(email, portal_user_id, preferred_username)
     ledger_role = map_portal_role_to_ledger(portal_role)
-    password_hash = generate_password_hash(secrets.token_urlsafe(32), method="scrypt")
+    if is_valid_password_hash(password_hash or ""):
+        stored_hash = password_hash.strip()
+    else:
+        stored_hash = generate_password_hash(secrets.token_urlsafe(32), method="scrypt")
 
     conn = db.get_connection()
     try:
@@ -176,7 +186,7 @@ def provision_portal_user(
             """,
             (
                 username,
-                password_hash,
+                stored_hash,
                 ledger_role,
                 portal_user_id,
                 email.lower(),
@@ -186,6 +196,7 @@ def provision_portal_user(
         )
         conn.commit()
         user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        sync_portal_password_hash(db, user_id, password_hash)
         row = conn.execute(
             "SELECT user_id, username, role, firm_id, portal_user_id, email FROM users WHERE user_id = ?",
             (user_id,),
@@ -201,6 +212,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
     email = payload["email"]
     portal_role = payload.get("role", "firm_admin")
     preferred_username = payload.get("username")
+    portal_password_hash = payload.get("password_hash")
 
     try:
         return resolve_portal_user(
@@ -209,6 +221,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
             platform_firm_id,
             preferred_username,
             portal_role,
+            portal_password_hash,
         )
     except LookupError as exc:
         if "conflict" in str(exc).lower():
@@ -219,6 +232,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
             platform_firm_id,
             portal_role,
             preferred_username,
+            portal_password_hash,
         )
 
 
