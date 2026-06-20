@@ -883,18 +883,27 @@ class Database:
         ident = (identifier or "").strip().lower()
         if not ident:
             return None
+        self.initialize_security_columns()
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT * FROM users
-            WHERE lower(username) = ? OR lower(COALESCE(email, '')) = ?
-            LIMIT 1
-            """,
-            (ident, ident),
-        )
-        row = cursor.fetchone()
-        conn.close()
+        try:
+            cursor.execute(
+                """
+                SELECT * FROM users
+                WHERE lower(username) = ? OR lower(COALESCE(email, '')) = ?
+                LIMIT 1
+                """,
+                (ident, ident),
+            )
+            row = cursor.fetchone()
+        except sqlite3.OperationalError:
+            cursor.execute(
+                "SELECT * FROM users WHERE lower(username) = ? LIMIT 1",
+                (ident,),
+            )
+            row = cursor.fetchone()
+        finally:
+            conn.close()
         return dict(row) if row else None
 
     def get_admin_by_login_identifier(self, identifier: str) -> Optional[Dict]:
@@ -902,19 +911,32 @@ class Database:
         ident = (identifier or "").strip().lower()
         if not ident:
             return None
+        self.initialize_security_columns()
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT * FROM users
-            WHERE role = 'admin'
-              AND (lower(username) = ? OR lower(COALESCE(email, '')) = ?)
-            LIMIT 1
-            """,
-            (ident, ident),
-        )
-        row = cursor.fetchone()
-        conn.close()
+        try:
+            cursor.execute(
+                """
+                SELECT * FROM users
+                WHERE role = 'admin'
+                  AND (lower(username) = ? OR lower(COALESCE(email, '')) = ?)
+                LIMIT 1
+                """,
+                (ident, ident),
+            )
+            row = cursor.fetchone()
+        except sqlite3.OperationalError:
+            cursor.execute(
+                """
+                SELECT * FROM users
+                WHERE role = 'admin' AND lower(username) = ?
+                LIMIT 1
+                """,
+                (ident,),
+            )
+            row = cursor.fetchone()
+        finally:
+            conn.close()
         return dict(row) if row else None
 
     def get_user_by_id(self, user_id: int) -> Optional[Dict]:

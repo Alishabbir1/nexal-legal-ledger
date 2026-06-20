@@ -424,13 +424,18 @@ def login():
 
     if session.get('user_id'):
         return redirect(url_for('client_ledger'))
+    if not session.get('user_id'):
+        session.pop('firm_id', None)
+        session.pop('recovery_firm_id', None)
+        session.pop('recovery_user_id', None)
+        session.pop('recovery_username', None)
     error = None
     login_locked = False
     lockout_remaining = None
     if request.method == 'POST':
         identifier = (request.form.get('username') or '').strip().lower()
         password = request.form.get('password') or ''
-        resolved = resolve_user_for_login(identifier, session.get('firm_id'))
+        resolved = resolve_user_for_login(identifier)
         auth_db = db
         login_username = identifier
         if resolved:
@@ -1937,8 +1942,7 @@ def admin_recovery():
     if request.method == 'POST':
         identifier = (request.form.get('username') or '').strip().lower()
         recovery_key = (request.form.get('recovery_key') or '').strip().upper().replace(' ', '-')
-        hint_firm_id = session.get('firm_id') or session.get('recovery_firm_id')
-        resolved = resolve_admin_for_recovery(identifier, hint_firm_id)
+        resolved = resolve_admin_for_recovery(identifier)
         if not resolved:
             flash('Invalid username or recovery key.', 'error')
             return render_template('admin_recovery.html')

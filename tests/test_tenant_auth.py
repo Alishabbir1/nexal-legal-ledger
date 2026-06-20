@@ -116,6 +116,104 @@ def test_login_get_returns_200_without_session(tenant_auth_env):
     assert b"Sign In" in response.data
 
 
+def test_login_post_returns_200_with_stale_firm_id_session(tenant_auth_env):
+    """POST /login must not 500 when session cookie contains stale firm_id."""
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["firm_id"] = "00000000-0000-0000-0000-000000000000"
+
+    response = client.post("/login", data={"username": "nobody", "password": "wrong"})
+    assert response.status_code == 200
+    assert b"Sign In" in response.data
+
+
+def test_admin_recovery_post_returns_200_with_stale_firm_id(tenant_auth_env):
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["firm_id"] = "00000000-0000-0000-0000-000000000000"
+
+    response = client.post(
+        "/admin/recovery",
+        data={"username": "nobody", "recovery_key": "SRN-AAAA-BBBB-CCCC"},
+    )
+    assert response.status_code == 200
+    assert b"Admin Recovery" in response.data
+
+
+def test_login_post_with_unmigrated_tenant_db(tenant_auth_env):
+    """Tenant DB missing email column must not crash POST /login."""
+    from unittest.mock import patch
+
+    import sqlite3
+    import uuid
+
+    import bcrypt
+    from db_router import get_router
+
+    portal_firm_id = str(uuid.uuid4())
+    portal_user_id = str(uuid.uuid4())
+    password = "Unmigrated99!"
+    portal_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(12)).decode()
+
+    provision_firm(
+        name="Unmigrated Firm",
+        slug=f"unmig-{uuid.uuid4().hex[:8]}",
+        portal_firm_id=portal_firm_id,
+    )
+
+    token = generate_sso_token(
+        user_id=portal_user_id,
+        email="unmig@example.com",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        username="unmiguser",
+        extra={"password_hash": portal_hash},
+    )
+    client = app.test_client()
+    client.get("/auth/sso?token=" + token)
+    with client.session_transaction() as sess:
+        username = sess["username"]
+        firm_id = sess["firm_id"]
+    client.get("/logout")
+
+    tenant_path = get_router().resolve_database_path(firm_id)
+    conn = sqlite3.connect(tenant_path)
+    conn.executescript(
+        """
+        CREATE TABLE users_old AS
+        SELECT user_id, username, password_hash, role, active FROM users;
+        DROP TABLE users;
+        CREATE TABLE users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            password_hash TEXT,
+            role TEXT,
+            active INTEGER DEFAULT 1
+        );
+        INSERT INTO users SELECT user_id, username, password_hash, role, active FROM users_old;
+        DROP TABLE users_old;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    real_get_db = __import__("db_router", fromlist=["get_db_for_firm"]).get_db_for_firm
+
+    def get_db_without_init(firm_id_arg):
+        return get_router().get_database(firm_id_arg)
+
+    with patch("lib.tenant_auth.get_db_for_firm", get_db_without_init), patch(
+        "db_router.get_db_for_firm", get_db_without_init
+    ):
+        response = client.post(
+            "/login",
+            data={"username": username, "password": password},
+        )
+    assert response.status_code == 302
+    with client.session_transaction() as sess:
+        assert sess.get("user_id")
+
+
 def test_direct_login_with_tenant_credentials(tenant_auth_env):
     ctx = _provision_sso_admin("MyLedgerPass1!")
     ctx["client"].get("/logout")
