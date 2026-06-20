@@ -328,6 +328,8 @@ def require_login():
 
 @app.context_processor
 def inject_user():
+    from lib.firm_package import package_usage_summary, resolve_package_display_for_request
+
     ctx = {
         'current_username': session.get('username'),
         'current_role': session.get('role'),
@@ -337,6 +339,18 @@ def inject_user():
         'override_mode_by': session.get('override_enabled_by', ''),
         'override_mode_at': session.get('override_enabled_at', ''),
     }
+    try:
+        ctx['firm_package_label'] = resolve_package_display_for_request(session, db)
+        ctx['firm_package_usage'] = package_usage_summary(db, session)
+    except Exception:
+        ctx['firm_package_label'] = 'Essential (£39/month)'
+        ctx['firm_package_usage'] = {
+            'tier': 'essential',
+            'label': 'Essential (£39/month)',
+            'active_users': db.count_billable_active_users(),
+            'max_users': 2,
+            'at_limit': False,
+        }
     return ctx
 
 
@@ -1974,7 +1988,10 @@ def admin_recovery_reset():
 @require_admin
 def user_management():
     """Admin-only user management page."""
-    users = db.get_all_users()
+    from lib.firm_package import package_usage_summary
+
+    users = db.get_billable_users_for_management()
+    package_usage = package_usage_summary(db, session)
     recovery_key_set = any(
         (db.get_user_by_id(u['user_id']) or {}).get('admin_recovery_key_hash')
         for u in users if u.get('role') == 'admin'
@@ -1982,13 +1999,21 @@ def user_management():
     pending_recovery_key = session.pop('pending_recovery_key', None)
     return render_template('user_management.html', users=users, recovery_key_set=recovery_key_set,
                           current_user_id=session.get('user_id'),
-                          pending_recovery_key=pending_recovery_key)
+                          pending_recovery_key=pending_recovery_key,
+                          package_usage=package_usage)
 
 
 @app.route('/user-management/add-user', methods=['POST'])
 @require_admin
 def user_management_add_user():
     """Create new user with temporary password."""
+    from lib.firm_package import check_user_limit
+
+    limit_error = check_user_limit(db, session)
+    if limit_error:
+        flash(limit_error, 'error')
+        return redirect(url_for('user_management'))
+
     name = (request.form.get('name') or '').strip()
     username = (request.form.get('username') or '').strip().lower()
     role = request.form.get('role') or 'staff'
@@ -2270,7 +2295,7 @@ def new_reconciliation():
 def reports():
     """Reports page"""
     clients = db.get_all_clients()
-    users = db.get_active_users()
+    users = db.get_billable_active_users()
     return render_template('reports.html', clients=clients, users=users)
 
 

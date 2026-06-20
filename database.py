@@ -95,10 +95,12 @@ def _default_db_path() -> str:
 class Database:
     """Database manager with compliance rule enforcement"""
     
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, is_template: bool = False, skip_user_seed: bool = False):
         if db_path is None:
             db_path = _default_db_path()
         self.db_path = db_path
+        self.is_template = is_template
+        self.skip_user_seed = skip_user_seed
         self.init_database()
     
     def get_connection(self) -> sqlite3.Connection:
@@ -455,11 +457,14 @@ class Database:
             WHERE reversal_of IS NOT NULL
               AND (parent_transaction_id IS NULL OR reversal_of_transaction_id IS NULL)
         """)
+        self._ensure_column(cursor, 'users', 'portal_role', 'TEXT')
+        self._ensure_column(cursor, 'users', 'is_system', 'INTEGER DEFAULT 0')
         self._backfill_ledger_reversal_depths(cursor)
         self._sync_cashbook_reversal_depth_from_ledger(cursor)
         self._migrate_reconciliation_versioning(cursor)
         conn.commit()
-        self._seed_default_users(cursor)
+        if not self.skip_user_seed:
+            self._seed_default_users(cursor)
         conn.commit()
         conn.close()
     
@@ -612,27 +617,36 @@ class Database:
                 ('email', 'TEXT'),
                 ('firm_id', 'TEXT'),
                 ('portal_role', 'TEXT'),
+                ('is_system', 'INTEGER DEFAULT 0'),
             ]
             for col_name, col_def in columns_to_add:
                 if col_name not in existing:
                     cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}")
+            cursor.execute("""
+                UPDATE users SET is_system = 1
+                WHERE username IN ('admin', 'staff')
+                  AND (portal_user_id IS NULL OR portal_user_id = '')
+                  AND COALESCE(is_system, 0) = 0
+            """)
             conn.commit()
         finally:
             conn.close()
 
     def _seed_default_users(self, cursor):
-        cursor.execute("SELECT COUNT(*) AS total FROM users")
-        count = cursor.fetchone()[0]
+        cursor.execute("SELECT value FROM system_config WHERE key = 'provisioned_tenant'")
+        if cursor.fetchone() or self.skip_user_seed:
+            return
         defaults = [
             ('admin', 'admin', 'admin'),
             ('staff', 'staff', 'staff'),
         ]
+        is_system = 1 if self.is_template else 0
         for username, password, role in defaults:
             cursor.execute("SELECT user_id FROM users WHERE username = ?", (username,))
             if not cursor.fetchone():
                 cursor.execute(
-                    "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                    (username, generate_password_hash(password), role)
+                    "INSERT INTO users (username, password_hash, role, is_system) VALUES (?, ?, ?, ?)",
+                    (username, generate_password_hash(password), role, is_system)
                 )
         # One-time migration: ensure default test passwords are admin/staff
         cursor.execute("SELECT value FROM system_config WHERE key = 'default_passwords_updated'")
@@ -641,6 +655,11 @@ class Database:
                 cursor.execute("UPDATE users SET password_hash = ? WHERE username = ?",
                               (generate_password_hash(password), username))
             cursor.execute("INSERT OR IGNORE INTO system_config (key, value, description) VALUES ('default_passwords_updated', '1', 'Default user passwords set to admin/staff')")
+        if not self.is_template:
+            cursor.execute("""
+                UPDATE users SET is_system = 1
+                WHERE username IN ('admin', 'staff')
+            """)
     
     def reset_database(self, confirm: bool = False):
         """
@@ -1116,18 +1135,56 @@ class Database:
         return None
 
     def get_active_users(self) -> List[Dict]:
+        """Billable active users for reports and Created By filters."""
+        return self.get_billable_active_users()
+
+    def get_billable_active_users(self) -> List[Dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, username, role FROM users WHERE active = 1 ORDER BY username")
+        cursor.execute("""
+            SELECT user_id, username, role
+            FROM users
+            WHERE active = 1 AND COALESCE(is_system, 0) = 0
+            ORDER BY username
+        """)
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
 
-    def get_all_users(self) -> List[Dict]:
-        """Return all users for user management (id, username, name, role, active)."""
+    def count_billable_active_users(self) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, username, name, role, active FROM users ORDER BY username")
+        cursor.execute("""
+            SELECT COUNT(*) AS total
+            FROM users
+            WHERE active = 1 AND COALESCE(is_system, 0) = 0
+        """)
+        total = int(cursor.fetchone()[0])
+        conn.close()
+        return total
+
+    def get_all_users(self) -> List[Dict]:
+        """Return billable users for user management (excludes system accounts)."""
+        return self.get_billable_users_for_management()
+
+    def get_billable_users_for_management(self) -> List[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id, username, name, role, active
+            FROM users
+            WHERE COALESCE(is_system, 0) = 0
+            ORDER BY username
+        """)
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def get_all_users_unfiltered(self) -> List[Dict]:
+        """Return all users including system accounts (internal use only)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, username, name, role, active, is_system FROM users ORDER BY username")
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
@@ -1137,8 +1194,8 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO users (username, password_hash, role, name, temporary_password)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO users (username, password_hash, role, name, temporary_password, is_system)
+            VALUES (?, ?, ?, ?, ?, 0)
         """, (username.lower().strip(), password_hash, role, (name or '').strip() or None, 1 if temporary else 0))
         uid = cursor.lastrowid
         conn.commit()

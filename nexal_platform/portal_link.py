@@ -51,6 +51,12 @@ def ensure_portal_firm_linked(
     slug = slug_from_portal_firm(name, portal_firm_id)
     email = (jwt_payload.get("email") or "").strip() or None
     portal_user_id = jwt_payload.get("sub")
+    subscription_tier = (
+        jwt_payload.get("subscription_tier")
+        or jwt_payload.get("package")
+        or jwt_payload.get("plan")
+        or "essential"
+    )
 
     try:
         result = provision_firm(
@@ -59,6 +65,7 @@ def ensure_portal_firm_linked(
             portal_firm_id=portal_firm_id,
             owner_email=email,
             portal_user_id=portal_user_id,
+            subscription_tier=subscription_tier,
         )
         return result["firm"]
     except ValueError:

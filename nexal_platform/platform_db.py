@@ -41,6 +41,7 @@ class PlatformDatabase:
                     status          TEXT NOT NULL DEFAULT 'active'
                                     CHECK (status IN ('active', 'suspended', 'archived')),
                     portal_firm_id  TEXT,
+                    subscription_tier TEXT NOT NULL DEFAULT 'essential',
                     created_at      TEXT NOT NULL,
                     updated_at      TEXT NOT NULL
                 )
@@ -100,6 +101,10 @@ class PlatformDatabase:
         firm_cols = {row[1] for row in cursor.execute("PRAGMA table_info(firms)").fetchall()}
         if "firm_code" not in firm_cols:
             cursor.execute("ALTER TABLE firms ADD COLUMN firm_code TEXT")
+        if "subscription_tier" not in firm_cols:
+            cursor.execute(
+                "ALTER TABLE firms ADD COLUMN subscription_tier TEXT NOT NULL DEFAULT 'essential'"
+            )
 
         tables = {
             row[0]
@@ -117,15 +122,19 @@ class PlatformDatabase:
         firm_code: Optional[str] = None,
         portal_firm_id: Optional[str] = None,
         firm_id: Optional[str] = None,
+        subscription_tier: str = "essential",
     ) -> Dict[str, Any]:
         firm_id = firm_id or str(uuid.uuid4())
         now = _utc_now()
+        from lib.subscription_packages import normalize_tier
+
+        tier = normalize_tier(subscription_tier)
         conn = self.get_connection()
         try:
             conn.execute(
                 """
-                INSERT INTO firms (id, firm_code, name, slug, portal_firm_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO firms (id, firm_code, name, slug, portal_firm_id, subscription_tier, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     firm_id,
@@ -133,6 +142,7 @@ class PlatformDatabase:
                     name.strip(),
                     slug.strip().lower(),
                     portal_firm_id,
+                    tier,
                     now,
                     now,
                 ),
@@ -186,6 +196,23 @@ class PlatformDatabase:
         finally:
             conn.close()
         return self.get_user(user_id)
+
+    def update_firm_subscription_tier(self, firm_id: str, subscription_tier: str) -> Dict[str, Any]:
+        """Update firm package tier (Operations Portal sync)."""
+        from lib.subscription_packages import normalize_tier
+
+        tier = normalize_tier(subscription_tier)
+        now = _utc_now()
+        conn = self.get_connection()
+        try:
+            conn.execute(
+                "UPDATE firms SET subscription_tier = ?, updated_at = ? WHERE id = ?",
+                (tier, now, firm_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_firm(firm_id)
 
     def get_firm(self, firm_id: str) -> Dict[str, Any]:
         conn = self.get_connection()

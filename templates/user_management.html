@@ -5,6 +5,16 @@
     <h2 style="margin-bottom: 8px;">User Management</h2>
     <p style="margin-bottom: 20px;">Manage users and generate password reset links. Admin only.</p>
 
+    <p style="margin-bottom: 15px; color: #555;">
+        Package: <strong>{{ package_usage.label }}</strong>
+        — {{ package_usage.active_users }} / {{ package_usage.max_users }} active users
+    </p>
+    {% if package_usage.at_limit %}
+    <p style="margin-bottom: 15px; color: var(--danger, #b91c1c);">
+        Your package allows a maximum of {{ package_usage.max_users }} users. Please upgrade your package to add additional users.
+    </p>
+    {% endif %}
+
     {% if recovery_key_set %}
     <p style="margin-bottom: 15px; color: #555;">Recovery key is set. Use <a href="{{ url_for('admin_recovery') }}" style="color: rgb(0, 0, 238); text-decoration: underline;">Admin Recovery</a> if an admin forgets their password.</p>
     {% else %}

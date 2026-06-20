@@ -29,6 +29,7 @@ def provision_firm(
     owner_email: Optional[str] = None,
     portal_firm_id: Optional[str] = None,
     portal_user_id: Optional[str] = None,
+    subscription_tier: str = "essential",
 ) -> Dict[str, Any]:
     """
     Provision a new law firm tenant.
@@ -58,6 +59,7 @@ def provision_firm(
         slug=normalized_slug,
         firm_code=firm_code,
         portal_firm_id=portal_firm_id,
+        subscription_tier=subscription_tier,
     )
     firm_id = firm["id"]
     tenant_db_path = paths.tenant_db_path(firm_id)
@@ -65,6 +67,19 @@ def provision_firm(
     try:
         clone_template_to_firm_db(template_path, tenant_db_path)
         workspace = platform.create_workspace(firm_id=firm_id, database_path=tenant_db_path)
+        from database import Database
+        from lib.firm_package import cache_tier_in_tenant_db
+
+        tenant_db_instance = Database(db_path=tenant_db_path, skip_user_seed=True)
+        cache_tier_in_tenant_db(
+            tenant_db_instance,
+            firm.get("subscription_tier", subscription_tier),
+        )
+        tenant_db_instance.set_config(
+            "provisioned_tenant",
+            "1",
+            "Multi-tenant firm database — no default user seeding",
+        )
     except Exception:
         _rollback_partial_provision(platform, firm_id, tenant_db_path)
         raise

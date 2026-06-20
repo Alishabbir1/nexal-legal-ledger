@@ -144,8 +144,16 @@ def provision_portal_user(
     preferred_username: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a ledger user automatically from portal identity."""
+    from flask import has_request_context, session
+    from lib.firm_package import check_user_limit, resolve_firm_tier
+
     db = get_db_for_firm(platform_firm_id)
     db.initialize_security_columns()
+    session_ctx = session if has_request_context() else {"firm_id": platform_firm_id}
+    limit_error = check_user_limit(db, session_ctx)
+    if limit_error:
+        raise ValueError(limit_error)
+
     username = _derive_username(email, portal_user_id, preferred_username)
     ledger_role = map_portal_role_to_ledger(portal_role)
     password_hash = generate_password_hash(secrets.token_urlsafe(32), method="scrypt")
@@ -216,6 +224,8 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
 
 def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Validate firm, resolve user, and populate Flask session."""
+    from lib.firm_package import cache_tier_in_tenant_db, resolve_firm_tier
+
     platform_firm = resolve_platform_firm(str(jwt_payload["firm_id"]), jwt_payload)
     platform_firm_id = platform_firm["id"]
     ledger_user = ensure_portal_user_in_ledger(jwt_payload, platform_firm_id)
@@ -229,6 +239,9 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
     for key, value in session_data.items():
         flask_session[key] = value
     flask_session["sso_established_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    tenant_db = get_db_for_firm(platform_firm_id)
+    tier = resolve_firm_tier(session_data, tenant_db)
+    cache_tier_in_tenant_db(tenant_db, tier)
     return session_data
 
 
