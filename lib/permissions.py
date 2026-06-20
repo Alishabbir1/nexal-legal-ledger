@@ -1,13 +1,15 @@
 """
 Phase 5.3 — ledger permission helpers for Admin / Staff portal roles.
 """
+from typing import Optional
+
 from flask import session
 
 ADMIN_PORTAL_ROLES = frozenset({"firm_admin", "admin", "owner", "practice_manager", "manager"})
 LEGACY_ADMIN_PORTAL_ROLES = ADMIN_PORTAL_ROLES
 
 
-def normalize_portal_role(role: str | None) -> str:
+def normalize_portal_role(role: Optional[str]) -> str:
     """Map portal JWT / DB roles to admin or staff."""
     value = (role or "staff").strip().lower()
     if value in ADMIN_PORTAL_ROLES:
