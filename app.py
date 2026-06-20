@@ -16,6 +16,8 @@ import logging
 from typing import Tuple, Optional, Dict
 
 from werkzeug.security import generate_password_hash, check_password_hash
+
+from lib.password_verification import verify_password
 from database import Database
 from date_utils import (
     log_transaction_date_saved,
@@ -1886,7 +1888,7 @@ def admin_generate_recovery_key():
     if locked:
         flash(f'Account temporarily locked. Please try again in {remaining}.', 'error')
         return redirect(url_for('admin_security'))
-    if not check_password_hash(user['password_hash'], password):
+    if not verify_password(user['password_hash'], password):
         msg, is_locked, remaining = db.record_failed_recovery_confirm(user_id)
         flash(msg, 'error')
         if is_locked:

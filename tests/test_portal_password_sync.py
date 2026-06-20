@@ -3,10 +3,12 @@ import os
 import tempfile
 import uuid
 
+import bcrypt
 import pytest
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash
 
 from db_router import get_db_for_firm, reset_router
+from lib.password_verification import verify_password
 from lib.portal_password_sync import is_valid_password_hash, sync_portal_password_hash
 from nexal_platform.provision import provision_firm
 from portal_bridge import ensure_portal_user_in_ledger
@@ -42,7 +44,7 @@ def test_sync_portal_password_hash_updates_ledger_user():
         assert sync_portal_password_hash(db, uid, portal_hash) is True
         user = db.get_user_by_id(uid)
         assert user["password_hash"] == portal_hash
-        assert check_password_hash(user["password_hash"], "PortalPass123!")
+        assert verify_password(user["password_hash"], "PortalPass123!")
 
         assert sync_portal_password_hash(db, uid, portal_hash) is False
 
@@ -73,7 +75,7 @@ def test_sso_provision_stores_portal_password_hash(isolated_env):
     db = get_db_for_firm(firm["id"])
     ledger_user = db.get_user_by_id(user["user_id"])
 
-    assert check_password_hash(ledger_user["password_hash"], portal_password)
+    assert verify_password(ledger_user["password_hash"], portal_password)
 
 
 def test_sso_login_resyncs_password_after_portal_change(isolated_env):
@@ -101,11 +103,11 @@ def test_sso_login_resyncs_password_after_portal_change(isolated_env):
     ensure_portal_user_in_ledger({**base_payload, "password_hash": initial_hash}, firm["id"])
     db = get_db_for_firm(firm["id"])
     user = db.get_user_by_username("resync")
-    assert check_password_hash(user["password_hash"], "InitialPass1!")
+    assert verify_password(user["password_hash"], "InitialPass1!")
 
     ensure_portal_user_in_ledger({**base_payload, "password_hash": updated_hash}, firm["id"])
     user = db.get_user_by_username("resync")
-    assert check_password_hash(user["password_hash"], "UpdatedPass2!")
+    assert verify_password(user["password_hash"], "UpdatedPass2!")
 
 
 def test_recovery_key_generation_after_sso_password_sync(isolated_env):
@@ -147,3 +149,44 @@ def test_recovery_key_generation_after_sso_password_sync(isolated_env):
     with client.session_transaction() as sess:
         assert sess.get("pending_recovery_key")
         assert sess.get("pending_recovery_key").startswith("SRN-")
+
+
+def test_recovery_key_accepts_portal_bcrypt_password_hash(isolated_env):
+    """Portal stores bcrypt; recovery key must verify with werkzeug-incompatible hash."""
+    from app import app
+
+    portal_firm_id = str(uuid.uuid4())
+    portal_user_id = str(uuid.uuid4())
+    portal_password = "MyPassword123"
+    portal_hash = bcrypt.hashpw(
+        portal_password.encode("utf-8"),
+        bcrypt.gensalt(rounds=12),
+    ).decode("utf-8")
+
+    provision_firm(
+        name="Bcrypt Firm",
+        slug=f"bcrypt-{uuid.uuid4().hex[:8]}",
+        portal_firm_id=portal_firm_id,
+    )
+
+    from sso_auth import generate_sso_token
+
+    token = generate_sso_token(
+        user_id=portal_user_id,
+        email="user@bcrypt.example",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        username="user",
+        extra={"password_hash": portal_hash},
+    )
+
+    client = app.test_client()
+    assert client.get("/auth/sso?token=" + token).status_code == 302
+
+    gen = client.post(
+        "/admin/security/generate-recovery-key",
+        data={"password": portal_password},
+    )
+    assert gen.status_code == 302
+    with client.session_transaction() as sess:
+        assert sess.get("pending_recovery_key", "").startswith("SRN-")

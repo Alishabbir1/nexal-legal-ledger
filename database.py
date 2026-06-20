@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import os
 import logging
 import calendar
-from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import generate_password_hash
 
 logger = logging.getLogger(__name__)
 
@@ -1127,10 +1127,12 @@ class Database:
         conn.close()
 
     def verify_user_credentials(self, username: str, password: str) -> Optional[Dict]:
+        from lib.password_verification import verify_password
+
         user = self.get_user_by_username(username)
         if not user or not user.get('active'):
             return None
-        if check_password_hash(user['password_hash'], password):
+        if verify_password(user['password_hash'], password):
             return user
         return None
 
