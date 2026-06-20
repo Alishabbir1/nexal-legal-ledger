@@ -424,13 +424,15 @@
             {% set is_receipt = (trans.transaction_type == 'Receipt') %}
             {% set amt        = trans.amount | float %}
 
-            {# Update totals for footer #}
-            {% if is_receipt %}
-                {% set ns.tot_cli_cr = ns.tot_cli_cr + amt %}
-            {% else %}
-                {% set ns.tot_cli_dr = ns.tot_cli_dr + amt %}
-                {% if is_fee_xfr %}
-                    {% set ns.tot_off_cr = ns.tot_off_cr + amt %}
+            {# Update totals for footer (same eligibility as running balance) #}
+            {% if counts %}
+                {% if is_receipt %}
+                    {% set ns.tot_cli_cr = ns.tot_cli_cr + amt %}
+                {% else %}
+                    {% set ns.tot_cli_dr = ns.tot_cli_dr + amt %}
+                    {% if is_fee_xfr %}
+                        {% set ns.tot_off_cr = ns.tot_off_cr + amt %}
+                    {% endif %}
                 {% endif %}
             {% endif %}
 
