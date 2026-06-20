@@ -14,12 +14,13 @@ import logging
 from typing import Tuple, Optional, Dict
 
 from lib.portal_auth import (
-    get_portal_base_url,
     get_portal_dashboard_url,
     get_portal_login_url,
+    get_portal_users_url,
     portal_login_redirect,
     portal_logout_redirect,
 )
+from lib.subscription_packages import DEFAULT_TIER, max_users_for_tier, package_display_label
 from database import Database
 from date_utils import (
     log_transaction_date_saved,
@@ -331,16 +332,17 @@ def inject_user():
         ctx['firm_package_label'] = resolve_package_display_for_request(session, db)
         ctx['firm_package_usage'] = package_usage_summary(db, session)
     except Exception:
-        ctx['firm_package_label'] = 'Essential (£39/month)'
+        fallback_label = package_display_label(DEFAULT_TIER)
+        ctx['firm_package_label'] = fallback_label
         ctx['firm_package_usage'] = {
-            'tier': 'essential',
-            'label': 'Essential (£39/month)',
+            'tier': DEFAULT_TIER,
+            'label': fallback_label,
             'active_users': _legacy_db.count_billable_active_users(),
-            'max_users': 2,
+            'max_users': max_users_for_tier(DEFAULT_TIER),
             'at_limit': False,
         }
-    ctx['portal_url'] = get_portal_base_url()
     ctx['portal_dashboard_url'] = get_portal_dashboard_url()
+    ctx['portal_users_url'] = get_portal_users_url()
     return ctx
 
 

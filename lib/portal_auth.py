@@ -33,6 +33,11 @@ def get_portal_dashboard_url() -> str:
     return f"{get_portal_base_url()}/portal"
 
 
+def get_portal_users_url() -> str:
+    """Full URL for Portal team / user management."""
+    return f"{get_portal_base_url()}/portal/users"
+
+
 def portal_login_redirect(next_path: str = None, reason: str = None):
     """Flask redirect to Portal login."""
     from flask import redirect

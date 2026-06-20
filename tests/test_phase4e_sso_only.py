@@ -11,6 +11,7 @@ from db_router import get_db_for_firm, reset_router
 from lib.portal_auth import (
     get_portal_dashboard_url,
     get_portal_login_url,
+    get_portal_users_url,
 )
 from nexal_platform.provision import provision_firm
 from sso_auth import generate_sso_token
@@ -178,6 +179,7 @@ def test_user_management_page_has_no_password_ui(phase4e_env):
     html = response.data.decode()
     assert "User invitations and account management are handled through the Nexal Legal Portal." in html
     assert "Manage Users in Portal" in html
+    assert f'href="{get_portal_users_url()}"' in html
     assert "temp_password" not in html
     assert "Reset Password" not in html
     assert "recovery" not in html.lower()
