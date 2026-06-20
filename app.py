@@ -1862,53 +1862,29 @@ def system_health():
 def admin_security():
     """Security page with Admin Recovery Key management."""
     pending_key = session.pop('pending_recovery_key', None)
-    user_id = session.get('user_id')
-    recovery_confirm_locked = False
-    recovery_confirm_remaining = None
-    if user_id:
-        locked, _, remaining = db.is_recovery_confirm_locked(user_id)
-        recovery_confirm_locked = locked
-        recovery_confirm_remaining = remaining
-    return render_template('security.html', pending_recovery_key=pending_key,
-                          recovery_confirm_locked=recovery_confirm_locked,
-                          recovery_confirm_remaining=recovery_confirm_remaining)
+    return render_template('security.html', pending_recovery_key=pending_key)
 
 
 @app.route('/admin/security/generate-recovery-key', methods=['POST'])
 @require_admin
 def admin_generate_recovery_key():
-    """Verify admin password, generate new recovery key. Same lockout as login (5 attempts)."""
-    from lib.portal_password_sync import prepare_sso_password_for_verification
-    from lib.password_verification import verify_password_detailed
-
-    password = request.form.get('password') or ''
+    """Generate a new admin recovery key for the authenticated admin session."""
     user_id = session.get('user_id')
     user = db.get_user_by_id(user_id) if user_id else None
     if not user:
         flash('Session expired. Please log in again.', 'error')
         return redirect(url_for('admin_security'))
-    locked, _, remaining = db.is_recovery_confirm_locked(user_id)
-    if locked:
-        flash(f'Account temporarily locked. Please try again in {remaining}.', 'error')
-        return redirect(url_for('admin_security'))
-    prepare_sso_password_for_verification(db, session)
-    user = db.get_user_by_id(user_id)
-    ok, system_error = verify_password_detailed(user['password_hash'], password)
-    if system_error:
-        flash(system_error, 'error')
-        return redirect(url_for('admin_security'))
-    if not ok:
-        msg, is_locked, remaining = db.record_failed_recovery_confirm(user_id)
-        flash(msg, 'error')
-        if is_locked:
-            flash(f'Account temporarily locked. Please try again in {remaining}.', 'error')
-        return redirect(url_for('admin_security'))
-    db.reset_recovery_confirm_attempts(user_id)
     key = generate_recovery_key()
     key_hash = hash_recovery_key(key)
     db.set_admin_recovery_key_hash(user_id, key_hash)
     session['pending_recovery_key'] = key
-    log_audit('Security', 'Recovery key generated', record_id=str(user_id), details='Admin generated new recovery key')
+    username = user.get('username') or session.get('username', 'admin')
+    log_audit(
+        'Security',
+        'Recovery key generated',
+        record_id=str(user_id),
+        details=f'{username} generated a new recovery key',
+    )
     flash('New recovery key generated. Save it securely — it will not be shown again.', 'info')
     from_page = request.form.get('from_page', '')
     if from_page == 'user_management':

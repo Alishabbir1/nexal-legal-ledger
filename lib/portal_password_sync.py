@@ -2,7 +2,7 @@
 Synchronise Portal password hashes into tenant ledger user records.
 
 Portal authenticates with bcrypt; ledger stores the same hash so password-gated
-flows (recovery key generation, force password change) validate against Portal credentials.
+flows validate against Portal credentials when required.
 """
 import logging
 from typing import Optional
@@ -89,7 +89,7 @@ def prepare_sso_password_for_verification(db, session) -> None:
     """
     Re-apply Portal password hash from the active SSO session before password checks.
 
-    Ensures recovery-key and security prompts validate against the Portal credential
+    Ensures password-gated security prompts validate against the Portal credential
     even if an earlier sync was missed or the record was created before hash sync existed.
     """
     if not session.get("sso_login"):

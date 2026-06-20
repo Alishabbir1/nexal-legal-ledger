@@ -13,31 +13,21 @@
         Generating a new key immediately invalidates the previous one — store the new key securely offline before dismissing the dialog.
     </p>
 
-    {% if recovery_confirm_locked %}
-    <div class="alert alert-error" style="margin-bottom:18px;">Account temporarily locked. Please try again in {{ recovery_confirm_remaining }}.</div>
-    <button type="button" class="btn" id="btn-generate-key" disabled>Generate New Recovery Key</button>
-    {% else %}
     <button type="button" class="btn" id="btn-generate-key">Generate New Recovery Key</button>
-    {% endif %}
 </div>
 
 
-<!-- ── Modal 1: Confirm password ───────────────────────────────── -->
-<div id="modal-password" style="display:none; position:fixed; inset:0; z-index:9000; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px);">
+<!-- ── Modal 1: Confirm regeneration ─────────────────────────── -->
+<div id="modal-confirm" style="display:none; position:fixed; inset:0; z-index:9000; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px);">
     <div style="background:var(--bg-surface); border:1px solid var(--border-default); border-radius:12px; padding:28px 30px; max-width:440px; width:92%; box-shadow:0 24px 64px rgba(0,0,0,0.6);">
-        <h3 style="margin:0 0 8px; font-size:16px; color:var(--text-primary);">Confirm your password</h3>
+        <h3 style="margin:0 0 8px; font-size:16px; color:var(--text-primary);">Generate New Recovery Key</h3>
         <p style="color:var(--text-secondary); font-size:13px; margin-bottom:20px; line-height:1.55;">
-            Re-enter your admin password to generate a new recovery key.
-            The previous key will no longer work after this action.
+            Are you sure? Generating a new recovery key will permanently invalidate the existing recovery key.
         </p>
         <form method="POST" action="{{ url_for('admin_generate_recovery_key') }}">
-            <div class="form-group">
-                <label>Admin Password</label>
-                <input type="password" name="password" required autocomplete="current-password" placeholder="Enter your current password">
-            </div>
             <div style="display:flex; gap:10px; margin-top:20px; justify-content:flex-end;">
-                <button type="button" class="btn btn-secondary" id="btn-cancel-password">Cancel</button>
-                <button type="submit" class="btn">Generate New Key</button>
+                <button type="button" class="btn btn-secondary" id="btn-cancel-confirm">Cancel</button>
+                <button type="submit" class="btn">Confirm</button>
             </div>
         </form>
     </div>
@@ -88,17 +78,17 @@
 <script>
 (function() {
     var btnGenerate   = document.getElementById('btn-generate-key');
-    var modalPassword = document.getElementById('modal-password');
-    var btnCancel     = document.getElementById('btn-cancel-password');
+    var modalConfirm  = document.getElementById('modal-confirm');
+    var btnCancel     = document.getElementById('btn-cancel-confirm');
     var modalRecovery = document.getElementById('modal-recovery-key');
     var cbSaved       = document.getElementById('cb-saved');
     var btnContinue   = document.getElementById('btn-continue');
 
     if (btnGenerate) {
-        btnGenerate.addEventListener('click', function() { modalPassword.style.display = 'flex'; });
+        btnGenerate.addEventListener('click', function() { modalConfirm.style.display = 'flex'; });
     }
     if (btnCancel) {
-        btnCancel.addEventListener('click', function() { modalPassword.style.display = 'none'; });
+        btnCancel.addEventListener('click', function() { modalConfirm.style.display = 'none'; });
     }
     /* Show recovery key modal if pending key present */
     if (modalRecovery && modalRecovery.style.display !== 'none') {
@@ -107,15 +97,15 @@
     if (cbSaved && btnContinue) {
         cbSaved.addEventListener('change', function() { btnContinue.disabled = !cbSaved.checked; });
     }
-    /* Close password modal on overlay click */
-    if (modalPassword) {
-        modalPassword.addEventListener('click', function(e) {
-            if (e.target === modalPassword) modalPassword.style.display = 'none';
+    /* Close confirm modal on overlay click */
+    if (modalConfirm) {
+        modalConfirm.addEventListener('click', function(e) {
+            if (e.target === modalConfirm) modalConfirm.style.display = 'none';
         });
     }
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
-            if (modalPassword) modalPassword.style.display = 'none';
+            if (modalConfirm) modalConfirm.style.display = 'none';
         }
     });
 })();

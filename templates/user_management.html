@@ -71,30 +71,13 @@
 <div id="modal-regenerate-confirm" class="um-modal" style="display: none;">
     <div class="um-modal-overlay"></div>
     <div class="um-modal-content">
-        <h3 style="margin-bottom: 10px;">Regenerate Recovery Key</h3>
-        <p style="color: #666; margin-bottom: 20px;">Generating a new recovery key will permanently invalidate the previous one.</p>
-        <div style="display: flex; gap: 10px;">
-            <button type="button" class="btn" id="btn-regenerate-continue">Continue</button>
-            <button type="button" class="btn btn-secondary" id="btn-regenerate-cancel">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<!-- Modal: Password for regenerate -->
-<div id="modal-regenerate-password" class="um-modal" style="display: none;">
-    <div class="um-modal-overlay"></div>
-    <div class="um-modal-content">
-        <h3 style="margin-bottom: 10px;">Confirm your password</h3>
-        <p style="color: #666; margin-bottom: 20px;">Re-enter your admin password to generate a new recovery key.</p>
+        <h3 style="margin-bottom: 10px;">Generate New Recovery Key</h3>
+        <p style="color: #666; margin-bottom: 20px;">Are you sure? Generating a new recovery key will permanently invalidate the existing recovery key.</p>
         <form method="POST" action="{{ url_for('admin_generate_recovery_key') }}">
             <input type="hidden" name="from_page" value="user_management">
-            <div class="form-group">
-                <label>Admin Password</label>
-                <input type="password" name="password" required autocomplete="current-password">
-            </div>
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button type="submit" class="btn">Generate New Key</button>
-                <button type="button" class="btn btn-secondary" id="btn-regenerate-pwd-cancel">Cancel</button>
+            <div style="display: flex; gap: 10px;">
+                <button type="submit" class="btn">Confirm</button>
+                <button type="button" class="btn btn-secondary" id="btn-regenerate-cancel">Cancel</button>
             </div>
         </form>
     </div>
@@ -183,10 +166,7 @@
 (function() {
     var btnRegen = document.getElementById('btn-regenerate-key');
     var modalRegenConfirm = document.getElementById('modal-regenerate-confirm');
-    var modalRegenPwd = document.getElementById('modal-regenerate-password');
-    var btnRegenContinue = document.getElementById('btn-regenerate-continue');
     var btnRegenCancel = document.getElementById('btn-regenerate-cancel');
-    var btnRegenPwdCancel = document.getElementById('btn-regenerate-pwd-cancel');
     var btnAddUser = document.getElementById('btn-add-user');
     var modalAddUser = document.getElementById('modal-add-user');
     var btnAddUserCancel = document.getElementById('btn-add-user-cancel');
@@ -195,14 +175,7 @@
     var btnContinue = document.getElementById('btn-continue');
 
     if (btnRegen) btnRegen.addEventListener('click', function() { modalRegenConfirm.style.display = 'flex'; });
-    if (btnRegenContinue) btnRegenContinue.addEventListener('click', function() {
-        modalRegenConfirm.style.display = 'none';
-        if (modalRegenPwd) modalRegenPwd.style.display = 'flex';
-    });
     if (btnRegenCancel) btnRegenCancel.addEventListener('click', function() { modalRegenConfirm.style.display = 'none'; });
-    if (btnRegenPwdCancel) btnRegenPwdCancel.addEventListener('click', function() {
-        if (modalRegenPwd) modalRegenPwd.style.display = 'none';
-    });
     if (btnAddUser) btnAddUser.addEventListener('click', function() { if (modalAddUser) modalAddUser.style.display = 'flex'; });
     if (btnAddUserCancel) btnAddUserCancel.addEventListener('click', function() { if (modalAddUser) modalAddUser.style.display = 'none'; });
     if (cbSaved && btnContinue) cbSaved.addEventListener('change', function() { btnContinue.disabled = !cbSaved.checked; });
