@@ -88,6 +88,34 @@ def test_resolve_user_for_login_finds_tenant_user_by_email(tenant_auth_env):
     assert firm_id == ctx["firm_id"]
 
 
+def test_login_get_returns_200_with_stale_firm_id_session(tenant_auth_env):
+    """Stale firm_id in session must not crash the public login page."""
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["firm_id"] = "00000000-0000-0000-0000-000000000000"
+
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert b"Sign In" in response.data
+
+
+def test_login_get_returns_200_with_stale_recovery_firm_id(tenant_auth_env):
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["recovery_firm_id"] = "00000000-0000-0000-0000-000000000000"
+
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert b"Sign In" in response.data
+
+
+def test_login_get_returns_200_without_session(tenant_auth_env):
+    client = app.test_client()
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert b"Sign In" in response.data
+
+
 def test_direct_login_with_tenant_credentials(tenant_auth_env):
     ctx = _provision_sso_admin("MyLedgerPass1!")
     ctx["client"].get("/logout")

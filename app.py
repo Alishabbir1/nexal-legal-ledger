@@ -96,10 +96,15 @@ def _resolve_active_db():
     if cached is not None:
         return cached
     firm_id = session.get("firm_id") or session.get("recovery_firm_id")
-    if firm_id:
+    # Only route to tenant DB for authenticated or active recovery sessions.
+    # Stale firm_id cookies must not break public pages such as /login.
+    if firm_id and (session.get("user_id") or session.get("recovery_user_id")):
         from db_router import get_db_for_firm
-        g._nexal_active_db = get_db_for_firm(firm_id)
-        return g._nexal_active_db
+        try:
+            g._nexal_active_db = get_db_for_firm(firm_id)
+            return g._nexal_active_db
+        except (KeyError, PermissionError, OSError):
+            pass
     return _legacy_db
 
 
@@ -349,7 +354,7 @@ def inject_user():
         ctx['firm_package_usage'] = {
             'tier': 'essential',
             'label': 'Essential (£39/month)',
-            'active_users': db.count_billable_active_users(),
+            'active_users': _legacy_db.count_billable_active_users(),
             'max_users': 2,
             'at_limit': False,
         }
