@@ -2807,13 +2807,7 @@ def export_ledger_xlsx():
                          t['transaction_type'], t['reference'], t['source'], float(t['amount']), t.get('created_by', 'System')])
         data = _build_xlsx(headers, rows, 'Client Ledger')
         fn = f"ledger_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        exports_dir = _get_exports_dir()
-        filepath = os.path.join(exports_dir, fn)
-        with open(filepath, 'wb') as f:
-            f.write(data)
-        if request.args.get('save_local'):
-            return jsonify({'success': True, 'message': 'Export successful.', 'filename': fn, 'filepath': filepath, 'folder': exports_dir})
-        return send_file(filepath, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=fn)
+        return _xlsx_download_response(data, fn)
     except Exception as e:
         logger.exception('Excel export failed: ledger')
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2837,13 +2831,7 @@ def export_cashbook_xlsx():
                          t['source'], t['status'], client, float(t['amount']), t.get('created_by', 'System')])
         data = _build_xlsx(headers, rows, 'Cashbook')
         fn = f"cashbook_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        exports_dir = _get_exports_dir()
-        filepath = os.path.join(exports_dir, fn)
-        with open(filepath, 'wb') as f:
-            f.write(data)
-        if request.args.get('save_local'):
-            return jsonify({'success': True, 'message': 'Export successful.', 'filename': fn, 'filepath': filepath, 'folder': exports_dir})
-        return send_file(filepath, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=fn)
+        return _xlsx_download_response(data, fn)
     except Exception as e:
         logger.exception('Excel export failed: cashbook')
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2869,13 +2857,7 @@ def export_office_income_xlsx():
         rows.append(['', '', '', 'Total', float(total)])
         data = _build_xlsx(headers, rows, 'Office Income')
         fn = f"office_income_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        exports_dir = _get_exports_dir()
-        filepath = os.path.join(exports_dir, fn)
-        with open(filepath, 'wb') as f:
-            f.write(data)
-        if request.args.get('save_local'):
-            return jsonify({'success': True, 'message': 'Export successful.', 'filename': fn, 'filepath': filepath, 'folder': exports_dir})
-        return send_file(filepath, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=fn)
+        return _xlsx_download_response(data, fn)
     except Exception as e:
         logger.exception('Excel export failed: office income')
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2899,13 +2881,7 @@ def export_office_expenses_xlsx():
         rows.append(['', '', '', 'Total', float(total), ''])
         data = _build_xlsx(headers, rows, 'Office Expenses')
         fn = f"office_expenses_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        exports_dir = _get_exports_dir()
-        filepath = os.path.join(exports_dir, fn)
-        with open(filepath, 'wb') as f:
-            f.write(data)
-        if request.args.get('save_local'):
-            return jsonify({'success': True, 'message': 'Export successful.', 'filename': fn, 'filepath': filepath, 'folder': exports_dir})
-        return send_file(filepath, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=fn)
+        return _xlsx_download_response(data, fn)
     except Exception as e:
         logger.exception('Excel export failed: office expenses')
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2926,23 +2902,29 @@ def export_office_profit_xlsx():
         rows = [['Office Income', float(income_total)], ['Office Expenses', float(expenses_total)], ['Net Profit', float(net)]]
         data = _build_xlsx(headers, rows, 'Net Profit')
         fn = f"office_profit_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        exports_dir = _get_exports_dir()
-        filepath = os.path.join(exports_dir, fn)
-        with open(filepath, 'wb') as f:
-            f.write(data)
-        if request.args.get('save_local'):
-            return jsonify({'success': True, 'message': 'Export successful.', 'filename': fn, 'filepath': filepath, 'folder': exports_dir})
-        return send_file(filepath, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=fn)
+        return _xlsx_download_response(data, fn)
     except Exception as e:
         logger.exception('Excel export failed: office profit')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 def _get_exports_dir() -> str:
-    """Return the exports directory path. Creates it if needed."""
-    docs = os.path.join(os.path.expanduser('~'), 'Documents', 'NexalLegal', 'Exports')
-    os.makedirs(docs, exist_ok=True)
-    return docs
+    """Return writable exports directory for save_local / desktop exports."""
+    exports = os.path.join(_get_data_dir(), 'exports')
+    os.makedirs(exports, exist_ok=True)
+    return exports
+
+
+def _xlsx_download_response(data: bytes, filename: str):
+    """Return Excel download from memory; write to disk only for save_local."""
+    if request.args.get('save_local'):
+        return _save_local_response(data, filename)
+    return send_file(
+        io.BytesIO(data),
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 def _save_local_response(file_bytes: bytes, filename: str):
