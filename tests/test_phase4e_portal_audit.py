@@ -10,11 +10,13 @@ from app import app
 from db_router import get_db_for_firm, reset_router
 from lib.portal_auth import (
     DEFAULT_PORTAL_URL,
+    LIVE_PORTAL_URL,
     get_portal_base_url,
     get_portal_dashboard_url,
     get_portal_login_url,
     get_portal_logout_url,
     get_portal_users_url,
+    resolve_portal_base_url,
 )
 from lib.subscription_packages import (
     max_users_for_tier,
@@ -48,7 +50,21 @@ def test_portal_urls_use_nexal_portal_url_env(audit_env):
 
 def test_default_portal_url_points_to_vercel_not_parked_domain():
     assert DEFAULT_PORTAL_URL == "https://nexal-legal.vercel.app"
+    assert LIVE_PORTAL_URL == "https://nexal-legal.vercel.app"
     assert "nexallegal.co.uk/portal" not in DEFAULT_PORTAL_URL
+
+
+def test_parked_domain_env_is_replaced_with_live_portal(audit_env, monkeypatch):
+    monkeypatch.setenv("NEXAL_PORTAL_URL", "https://nexallegal.co.uk")
+    assert resolve_portal_base_url() == "https://nexal-legal.vercel.app"
+    assert get_portal_logout_url() == "https://nexal-legal.vercel.app/"
+    assert get_portal_login_url().startswith("https://nexal-legal.vercel.app/login")
+    assert get_portal_dashboard_url() == "https://nexal-legal.vercel.app/portal"
+
+
+def test_www_parked_domain_env_is_replaced(audit_env, monkeypatch):
+    monkeypatch.setenv("NEXAL_PORTAL_URL", "https://www.nexallegal.co.uk")
+    assert get_portal_logout_url() == "https://nexal-legal.vercel.app/"
 
 
 def test_no_hardcoded_production_portal_urls_in_templates():
