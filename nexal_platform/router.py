@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from database import Database
 
-from nexal_platform.config import PlatformPaths, get_platform_paths
+from nexal_platform.config import PlatformPaths, get_platform_paths, resolve_workspace_database_path
 from nexal_platform.platform_db import PlatformDatabase
 
 
@@ -21,7 +21,12 @@ class TenantRouter:
         workspace = self.platform.get_workspace_for_firm(firm_id)
         if workspace["status"] != "active":
             raise PermissionError(f"Workspace is not active for firm: {firm_id}")
-        return workspace["database_path"]
+        return resolve_workspace_database_path(
+            self.platform,
+            firm_id,
+            workspace["database_path"],
+            self.paths,
+        )
 
     def get_database(self, firm_id: str) -> Database:
         """Return a Database instance bound to the firm's isolated ledger database."""

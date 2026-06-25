@@ -19,10 +19,43 @@ def test_is_forbidden_runtime_path_detects_root_repo():
     assert is_forbidden_runtime_path("/var/lib/nexal-legal/tenants/x/solicitor_ledger.db") is False
 
 
-def test_default_runtime_root_without_env_is_not_repo_path(monkeypatch):
+def test_default_runtime_root_without_env_is_production_path(monkeypatch):
     monkeypatch.delenv("NEXAL_DATA_DIR", raising=False)
+    monkeypatch.delenv("NEXAL_DEV", raising=False)
     root = get_runtime_data_root()
-    assert "/nexal-legal-ledger" not in root.replace("\\", "/").lower() or os.access(root, os.W_OK)
+    assert root.replace("\\", "/") == "/var/lib/nexal-legal"
+
+
+def test_tenant_router_remaps_forbidden_workspace_path(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        data_root = os.path.join(tmp, "runtime-data")
+        monkeypatch.setenv("NEXAL_DATA_DIR", data_root)
+
+        from db_router import reset_router
+
+        reset_router()
+
+        platform = PlatformDatabase()
+        firm = platform.create_firm(name="Router Remap Firm", slug="router-remap-firm")
+        forbidden = "/root/nexal-legal-ledger/data/tenants/{}/solicitor_ledger.db".format(firm["id"])
+        platform.create_workspace(firm_id=firm["id"], database_path=forbidden)
+
+        from nexal_platform.router import TenantRouter
+
+        router = TenantRouter()
+        resolved = router.resolve_database_path(firm["id"])
+        assert not is_forbidden_runtime_path(resolved)
+        assert resolved.startswith(data_root)
+
+        workspace = platform.get_workspace_for_firm(firm["id"])
+        assert workspace["database_path"] == resolved
+
+
+def test_tenant_database_is_valid_never_stats_forbidden_path():
+    """Must not raise PermissionError when checking a /root deploy path."""
+    from nexal_platform.portal_link import _tenant_database_is_valid
+
+    assert _tenant_database_is_valid("/root/nexal-legal-ledger/data/tenants/x/solicitor_ledger.db") is False
 
 
 def test_sso_repairs_workspace_path_under_root(monkeypatch):

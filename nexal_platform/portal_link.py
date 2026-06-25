@@ -8,7 +8,11 @@ import shutil
 import sqlite3
 from typing import Any, Dict, Optional
 
-from nexal_platform.config import get_platform_paths, resolve_workspace_database_path
+from nexal_platform.config import (
+    get_platform_paths,
+    is_forbidden_runtime_path,
+    resolve_workspace_database_path,
+)
 from nexal_platform.platform_db import PlatformDatabase
 from nexal_platform.provision import provision_firm
 from nexal_platform.template import clone_template_to_firm_db, ensure_template_database
@@ -42,7 +46,12 @@ def _lookup_portal_firm(platform: PlatformDatabase, portal_firm_id: str) -> Opti
 
 def _tenant_database_is_valid(db_path: str) -> bool:
     """Return True when tenant DB exists and has the ledger users schema."""
-    if not os.path.isfile(db_path):
+    if is_forbidden_runtime_path(db_path):
+        return False
+    try:
+        if not os.path.isfile(db_path):
+            return False
+    except OSError:
         return False
     try:
         if os.path.getsize(db_path) < 512:

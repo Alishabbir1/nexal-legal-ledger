@@ -32,16 +32,13 @@ def get_runtime_data_root() -> str:
             )
         )
 
-    dev_data = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data",
-    )
-    dev_parent = os.path.dirname(dev_data)
-    try:
-        if os.path.isdir(dev_parent) and os.access(dev_parent, os.W_OK):
-            return os.path.abspath(dev_data)
-    except OSError:
-        pass
+    # Local repo-relative data/ only when explicitly opted in — never on VPS.
+    if os.environ.get("NEXAL_DEV", "").strip() == "1":
+        dev_data = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data",
+        )
+        return os.path.abspath(dev_data)
 
     return PRODUCTION_DATA_ROOT
 
@@ -60,7 +57,24 @@ def is_forbidden_runtime_path(path: Optional[str]) -> bool:
     if lower.startswith("/root/"):
         return True
 
+    repo_marker = "nexal-legal-ledger"
+    if repo_marker in lower and not lower.startswith(PRODUCTION_DATA_ROOT.lower()):
+        return True
+
     return False
+
+
+def path_is_under_runtime_root(path: str, root: str) -> bool:
+    """True when path resolves inside the configured runtime data root."""
+    if not path or not root:
+        return False
+    try:
+        resolved_path = os.path.abspath(path)
+        resolved_root = os.path.abspath(root)
+        common = os.path.commonpath([resolved_path, resolved_root])
+        return common == resolved_root
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -96,9 +110,13 @@ def resolve_workspace_database_path(platform, firm_id: str, stored_path: str, pa
     Updates platform.db when a forbidden deploy-time path is detected.
     """
     canonical = paths.tenant_db_path(firm_id)
-    if is_forbidden_runtime_path(stored_path):
+    needs_remap = (
+        is_forbidden_runtime_path(stored_path)
+        or not path_is_under_runtime_root(stored_path, paths.root)
+    )
+    if needs_remap:
         logger.warning(
-            "Remapping forbidden workspace database_path for firm %s: %s -> %s",
+            "Remapping workspace database_path for firm %s: %s -> %s",
             firm_id,
             stored_path,
             canonical,
