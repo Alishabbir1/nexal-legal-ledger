@@ -190,17 +190,15 @@ def provision_portal_user(
     preferred_username: Optional[str] = None,
     password_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a ledger user automatically from portal identity."""
-    from flask import has_request_context, session
-    from lib.firm_package import check_user_limit, resolve_firm_tier
+    """Create a ledger user automatically from portal identity.
+
+    User-limit enforcement is the sole responsibility of the Portal.
+    The Ledger provisions any user that arrives via a valid SSO token.
+    """
     from lib.portal_password_sync import is_valid_password_hash, sync_portal_password_hash
 
     db = get_db_for_firm(platform_firm_id)
     db.initialize_security_columns()
-    session_ctx = session if has_request_context() else {"firm_id": platform_firm_id}
-    limit_error = check_user_limit(db, session_ctx)
-    if limit_error:
-        raise ValueError(limit_error)
 
     username = _derive_username(email, portal_user_id, preferred_username)
     ledger_role = map_portal_role_to_ledger(portal_role)
