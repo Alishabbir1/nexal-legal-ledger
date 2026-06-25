@@ -5,10 +5,12 @@ import tempfile
 import pytest
 
 from nexal_platform.config import (
+    PRODUCTION_DATA_ROOT,
     get_platform_paths,
     get_runtime_data_root,
     is_forbidden_runtime_path,
     resolve_workspace_database_path,
+    safe_makedirs,
 )
 from nexal_platform.platform_db import PlatformDatabase
 
@@ -121,5 +123,46 @@ def test_resolve_workspace_database_path_updates_platform_db():
             paths,
         )
         assert resolved == paths.tenant_db_path(firm["id"])
+        workspace = platform.get_workspace_for_firm(firm["id"])
+        assert workspace["database_path"] == resolved
+
+
+def test_forbidden_nexal_data_dir_env_falls_back_to_production_root(monkeypatch):
+    """Production misconfig: NEXAL_DATA_DIR=/root/nexal-legal-ledger must never be used."""
+    monkeypatch.setenv("NEXAL_DATA_DIR", "/root/nexal-legal-ledger")
+    root = get_runtime_data_root()
+    assert root.replace("\\", "/") == PRODUCTION_DATA_ROOT
+
+
+def test_get_platform_paths_never_uses_forbidden_root(monkeypatch, tmp_path):
+    """get_platform_paths must not call os.makedirs under /root."""
+    monkeypatch.setenv("NEXAL_DATA_DIR", str(tmp_path / "allowed-data"))
+    paths = get_platform_paths()
+    assert not is_forbidden_runtime_path(paths.root)
+    assert paths.root.startswith(str(tmp_path))
+
+
+def test_safe_makedirs_refuses_forbidden_path():
+    with pytest.raises(PermissionError, match="forbidden"):
+        safe_makedirs("/root/nexal-legal-ledger/data/tenants/x", context="test")
+
+
+def test_resolve_workspace_repairs_bare_root_directory_path():
+    """Legacy rows may store the deploy root itself as database_path."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["NEXAL_DATA_DIR"] = os.path.join(tmp, "data")
+        platform = PlatformDatabase()
+        paths = get_platform_paths()
+        firm = platform.create_firm(name="Bare Root Firm", slug="bare-root-firm")
+        platform.create_workspace(firm_id=firm["id"], database_path="/root/nexal-legal-ledger")
+
+        resolved = resolve_workspace_database_path(
+            platform,
+            firm["id"],
+            "/root/nexal-legal-ledger",
+            paths,
+        )
+        assert resolved == paths.tenant_db_path(firm["id"])
+        assert not is_forbidden_runtime_path(resolved)
         workspace = platform.get_workspace_for_firm(firm["id"])
         assert workspace["database_path"] == resolved

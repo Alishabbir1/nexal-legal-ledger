@@ -307,16 +307,28 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
     """Validate firm, resolve user, and populate Flask session."""
     from lib.firm_package import cache_tier_in_tenant_db, resolve_firm_tier
     from lib.sso_trace import log_sso_detail, sso_stage
-    from nexal_platform.config import get_runtime_data_root
+    from nexal_platform.config import get_runtime_data_root, repair_all_stale_workspace_paths
 
     email = jwt_payload.get("email")
     portal_firm_id = str(jwt_payload["firm_id"])
+
+    # Repair stale workspace paths before any tenant filesystem access (SSO hot path).
+    platform_for_repair = PlatformDatabase()
+    repaired = repair_all_stale_workspace_paths(platform_for_repair)
+    if repaired:
+        logger.warning(
+            "Repaired %d stale workspace database_path(s) during SSO for %s",
+            repaired,
+            email,
+        )
+
     log_sso_detail(
         email,
         "jwt_decoded",
         portal_firm_id=portal_firm_id,
         portal_user_id=jwt_payload.get("sub"),
         data_root=get_runtime_data_root(),
+        workspace_paths_repaired=repaired,
     )
 
     platform_firm = sso_stage(
@@ -331,8 +343,6 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
         platform_firm_id=platform_firm_id,
         portal_firm_id=portal_firm_id,
     )
-
-    from nexal_platform.platform_db import PlatformDatabase
 
     workspace = sso_stage(
         email,

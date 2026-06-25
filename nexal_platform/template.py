@@ -7,7 +7,7 @@ from typing import Optional
 
 from database import Database
 
-from nexal_platform.config import PlatformPaths, get_platform_paths
+from nexal_platform.config import PlatformPaths, get_platform_paths, require_safe_tenant_db_path, safe_makedirs
 
 
 def ensure_template_database(paths: Optional[PlatformPaths] = None) -> str:
@@ -23,7 +23,7 @@ def ensure_template_database(paths: Optional[PlatformPaths] = None) -> str:
     if os.path.isfile(template_path):
         return template_path
 
-    os.makedirs(os.path.dirname(template_path), exist_ok=True)
+    safe_makedirs(os.path.dirname(template_path), context="template database")
     Database(db_path=template_path, is_template=True)
     return template_path
 
@@ -51,7 +51,8 @@ def clone_template_to_firm_db(template_path: str, target_path: str) -> str:
     if not os.path.isfile(template_path):
         raise FileNotFoundError(f"Template database not found: {template_path}")
 
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    target_path = require_safe_tenant_db_path(target_path, context="clone_template_to_firm_db")
+    safe_makedirs(os.path.dirname(target_path), context="tenant database parent")
     if os.path.exists(target_path):
         raise FileExistsError(f"Tenant database already exists: {target_path}")
 

@@ -11,7 +11,9 @@ from typing import Any, Dict, Optional
 from nexal_platform.config import (
     get_platform_paths,
     is_forbidden_runtime_path,
+    require_safe_tenant_db_path,
     resolve_workspace_database_path,
+    safe_makedirs,
 )
 from nexal_platform.platform_db import PlatformDatabase
 from nexal_platform.provision import provision_firm
@@ -105,6 +107,7 @@ def ensure_firm_tenant_ready(
         workspace["database_path"],
         paths,
     )
+    db_path = require_safe_tenant_db_path(db_path, context="ensure_firm_tenant_ready")
     if not _tenant_database_is_valid(db_path):
         logger.warning(
             "Repairing invalid tenant database for portal firm %s at %s",
@@ -172,10 +175,12 @@ def _ensure_tenant_database_file(
             + target_path
         )
 
+    target_path = require_safe_tenant_db_path(target_path, context="_ensure_tenant_database_file")
+
     if _tenant_database_is_valid(target_path):
         return target_path
 
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    safe_makedirs(os.path.dirname(target_path), context="provision tenant database")
     if os.path.exists(target_path):
         if not allow_repair:
             raise ValueError(f"Tenant database invalid: {target_path}")

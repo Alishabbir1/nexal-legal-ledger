@@ -22,7 +22,15 @@ def get_runtime_data_root() -> str:
     """Return the configured runtime data root directory."""
     env_root = os.environ.get("NEXAL_DATA_DIR", "").strip()
     if env_root:
-        return os.path.abspath(env_root)
+        resolved = os.path.abspath(env_root)
+        if is_forbidden_runtime_path(resolved):
+            logger.error(
+                "NEXAL_DATA_DIR=%s points at a forbidden deploy path; using %s instead",
+                resolved,
+                PRODUCTION_DATA_ROOT,
+            )
+            return PRODUCTION_DATA_ROOT
+        return resolved
 
     if getattr(sys, "frozen", False):
         return os.path.abspath(
@@ -93,15 +101,38 @@ class PlatformPaths:
 def get_platform_paths(root: Optional[str] = None) -> PlatformPaths:
     """Return platform paths, creating the directory tree if needed."""
     resolved_root = os.path.abspath(root or get_runtime_data_root())
+    if is_forbidden_runtime_path(resolved_root):
+        logger.error(
+            "Runtime data root %s is forbidden; falling back to %s",
+            resolved_root,
+            PRODUCTION_DATA_ROOT,
+        )
+        resolved_root = os.path.abspath(PRODUCTION_DATA_ROOT)
     paths = PlatformPaths(
         root=resolved_root,
         platform_db=os.path.join(resolved_root, "platform.db"),
         template_db=os.path.join(resolved_root, "templates", "solicitor_ledger.db"),
         tenants_dir=os.path.join(resolved_root, "tenants"),
     )
-    os.makedirs(os.path.dirname(paths.template_db), exist_ok=True)
-    os.makedirs(paths.tenants_dir, exist_ok=True)
+    safe_makedirs(os.path.dirname(paths.template_db), context="template parent dir")
+    safe_makedirs(paths.tenants_dir, context="tenants dir")
     return paths
+
+
+def safe_makedirs(path: str, *, context: str = "") -> None:
+    """
+    Create a directory only when the path is under an allowed runtime root.
+    Never attempts to create paths under /root or the deploy git clone.
+    """
+    if not path or not str(path).strip():
+        raise ValueError("safe_makedirs: empty path")
+    normalized = os.path.normpath(str(path))
+    if is_forbidden_runtime_path(normalized):
+        suffix = f" ({context})" if context else ""
+        raise PermissionError(
+            f"Refusing to create directory under forbidden path{suffix}: {normalized}"
+        )
+    os.makedirs(normalized, exist_ok=True)
 
 
 def resolve_workspace_database_path(platform, firm_id: str, stored_path: str, paths: PlatformPaths) -> str:

@@ -122,3 +122,52 @@ def test_sunthess_production_sso_end_to_end(monkeypatch):
 
         dashboard = client.get("/client-ledger")
         assert dashboard.status_code == 200
+
+
+def test_sunthess_sso_repairs_bare_root_database_path(monkeypatch):
+    """Exact production error path: database_path = /root/nexal-legal-ledger."""
+    with tempfile.TemporaryDirectory() as tmp:
+        data_root = os.path.join(tmp, "runtime-data")
+        monkeypatch.setenv("NEXAL_DATA_DIR", data_root)
+        monkeypatch.setenv("SSO_SECRET_KEY", "sunthess-bare-root")
+
+        from db_router import reset_router
+
+        reset_router()
+
+        from nexal_platform.provision import provision_firm
+        from sso_auth import generate_sso_token
+        from app import app
+
+        result = provision_firm(
+            name="new",
+            slug="sunthess-bare-root",
+            portal_firm_id=PORTAL_FIRM_ID,
+            owner_email=EMAIL,
+            portal_user_id=CUSTOMER_ID,
+            subscription_tier="essential",
+        )
+        firm_id = result["firm"]["id"]
+        PlatformDatabase().update_workspace_database_path(firm_id, "/root/nexal-legal-ledger")
+
+        token = generate_sso_token(
+            user_id=FIRM_USER_ID,
+            email=EMAIL,
+            firm_id=PORTAL_FIRM_ID,
+            role="firm_admin",
+            username="sunthessmunir",
+            extra={
+                "firm_name": "new",
+                "subscription_tier": "essential",
+                "portal_customer_id": CUSTOMER_ID,
+            },
+        )
+
+        client = app.test_client()
+        response = client.get("/auth/sso?token=" + token)
+        assert response.status_code == 302, response.get_data(as_text=True)
+
+        workspace = PlatformDatabase().get_workspace_for_firm(firm_id)
+        assert not is_forbidden_runtime_path(workspace["database_path"])
+        assert workspace["database_path"].startswith(data_root)
+        assert os.path.isfile(workspace["database_path"])
