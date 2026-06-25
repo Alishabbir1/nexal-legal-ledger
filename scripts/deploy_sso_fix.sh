@@ -28,6 +28,7 @@ python3 scripts/repair_portal_tenant.py \
   --name "new" \
   --owner-email sunthessmunir@gmail.com \
   --portal-user-id 2cbf9a7d-2f8f-4c4a-9d64-fd7a24d363cc \
+  --portal-customer-id 7a0a8a6e-dfc2-444e-9bd0-10e13af27035 \
   --subscription-tier essential
 
 sudo systemctl restart "${SERVICE}"

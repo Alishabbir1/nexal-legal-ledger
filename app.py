@@ -106,6 +106,12 @@ def _resolve_active_db():
             return g._nexal_active_db
         except (KeyError, PermissionError, OSError):
             pass
+        except Exception as exc:
+            logger.exception(
+                "Tenant database routing failed for firm_id=%s: %s",
+                firm_id,
+                exc,
+            )
     return _legacy_db
 
 

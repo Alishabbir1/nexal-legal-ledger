@@ -67,6 +67,22 @@ def _sync_portal_user_roles(
     conn.commit()
 
 
+def _may_relink_stale_portal_user_id(
+    existing_portal_user_id: str,
+    incoming_portal_user_id: str,
+    portal_customer_id: Optional[str],
+) -> bool:
+    """
+    Allow relink when ledger still stores customers.id from early launch tokens
+    and the portal now sends firm_users.id for the same authenticated customer.
+    """
+    if str(existing_portal_user_id) == str(incoming_portal_user_id):
+        return False
+    if not portal_customer_id:
+        return False
+    return str(existing_portal_user_id) == str(portal_customer_id)
+
+
 def resolve_portal_user(
     email: str,
     portal_user_id: str,
@@ -74,6 +90,7 @@ def resolve_portal_user(
     preferred_username: Optional[str] = None,
     portal_role: Optional[str] = None,
     password_hash: Optional[str] = None,
+    portal_customer_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Find existing ledger user linked to portal identity."""
     from lib.portal_password_sync import sync_portal_password_hash
@@ -112,28 +129,52 @@ def resolve_portal_user(
                 (email,),
             ).fetchone()
             if row:
-                if row["portal_user_id"] and str(row["portal_user_id"]) != str(portal_user_id):
-                    raise LookupError("Portal user email conflict in ledger database")
-                if not row["portal_user_id"]:
+                existing_portal_user_id = row["portal_user_id"]
+                if existing_portal_user_id and str(existing_portal_user_id) != str(portal_user_id):
+                    if _may_relink_stale_portal_user_id(
+                        str(existing_portal_user_id),
+                        str(portal_user_id),
+                        portal_customer_id,
+                    ):
+                        logger.warning(
+                            "Relinking stale portal_user_id for %s: %s -> %s",
+                            email,
+                            existing_portal_user_id,
+                            portal_user_id,
+                        )
+                        conn.execute(
+                            """
+                            UPDATE users
+                            SET portal_user_id = ?, firm_id = ?, email = ?
+                            WHERE user_id = ?
+                            """,
+                            (
+                                portal_user_id,
+                                platform_firm_id,
+                                email.lower(),
+                                row["user_id"],
+                            ),
+                        )
+                        conn.commit()
+                    else:
+                        raise LookupError("Portal user email conflict in ledger database")
+                elif not existing_portal_user_id:
                     conn.execute(
-                    """
-                    UPDATE users
-                    SET portal_user_id = ?, firm_id = ?, email = ?
-                    WHERE user_id = ?
-                    """,
-                    (portal_user_id, platform_firm_id, email.lower(), row["user_id"]),
-                )
-                conn.commit()
+                        """
+                        UPDATE users
+                        SET portal_user_id = ?, firm_id = ?, email = ?
+                        WHERE user_id = ?
+                        """,
+                        (portal_user_id, platform_firm_id, email.lower(), row["user_id"]),
+                    )
+                    conn.commit()
+
+                if portal_role:
+                    _sync_portal_user_roles(conn, row["user_id"], platform_firm_id, portal_role)
                 updated = conn.execute(
                     "SELECT user_id, username, role, firm_id, portal_user_id, email FROM users WHERE user_id = ?",
                     (row["user_id"],),
                 ).fetchone()
-                if portal_role:
-                    _sync_portal_user_roles(conn, row["user_id"], platform_firm_id, portal_role)
-                    updated = conn.execute(
-                        "SELECT user_id, username, role, firm_id, portal_user_id, email FROM users WHERE user_id = ?",
-                        (row["user_id"],),
-                    ).fetchone()
                 sync_portal_password_hash(db, updated["user_id"], password_hash)
                 return dict(updated)
     finally:
@@ -213,6 +254,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
     portal_role = payload.get("role", "firm_admin")
     preferred_username = payload.get("username")
     portal_password_hash = payload.get("password_hash")
+    portal_customer_id = payload.get("portal_customer_id")
 
     try:
         return resolve_portal_user(
@@ -222,6 +264,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
             preferred_username,
             portal_role,
             portal_password_hash,
+            portal_customer_id,
         )
     except LookupError as exc:
         if "conflict" in str(exc).lower():

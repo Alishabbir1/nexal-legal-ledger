@@ -50,6 +50,10 @@ def main() -> int:
     parser.add_argument("--owner-email", required=True, help="Portal customer email")
     parser.add_argument("--portal-user-id", help="Portal firm_users.id UUID")
     parser.add_argument(
+        "--portal-customer-id",
+        help="Portal customers.id UUID (for stale portal_user_id relink during repair)",
+    )
+    parser.add_argument(
         "--subscription-tier",
         default="essential",
         help="Package tier to cache in platform + tenant DB (default: essential)",
@@ -64,6 +68,8 @@ def main() -> int:
         "subscription_tier": args.subscription_tier,
         "role": "firm_admin",
     }
+    if args.portal_customer_id:
+        jwt_payload["portal_customer_id"] = args.portal_customer_id
 
     platform = PlatformDatabase()
     before = None
