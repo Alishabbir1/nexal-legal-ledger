@@ -2,7 +2,8 @@
 import os
 from urllib.parse import quote
 
-DEFAULT_PORTAL_URL = "https://nexallegal.co.uk"
+# Production portal (Vercel). nexallegal.co.uk is marketing DNS only — not the portal app.
+DEFAULT_PORTAL_URL = "https://nexal-legal.vercel.app"
 
 
 def get_portal_base_url() -> str:
@@ -29,13 +30,18 @@ def get_portal_login_url(next_path: str = None, reason: str = None) -> str:
 
 
 def get_portal_dashboard_url() -> str:
-    """Full URL for Portal dashboard (post-logout landing)."""
+    """Full URL for Portal dashboard (Open Portal links from Ledger)."""
     return f"{get_portal_base_url()}/portal"
 
 
 def get_portal_users_url() -> str:
     """Full URL for Portal team / user management."""
     return f"{get_portal_base_url()}/portal/users"
+
+
+def get_portal_logout_url() -> str:
+    """Public Nexal Legal homepage — safe post-logout landing (never a parked domain path)."""
+    return f"{get_portal_base_url()}/"
 
 
 def portal_login_redirect(next_path: str = None, reason: str = None):
@@ -46,7 +52,7 @@ def portal_login_redirect(next_path: str = None, reason: str = None):
 
 
 def portal_logout_redirect():
-    """Flask redirect to Portal dashboard after Ledger logout."""
+    """Flask redirect to public Portal site after Ledger logout."""
     from flask import redirect
 
-    return redirect(get_portal_dashboard_url())
+    return redirect(get_portal_logout_url())

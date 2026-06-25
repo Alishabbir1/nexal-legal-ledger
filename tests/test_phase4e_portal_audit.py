@@ -9,9 +9,11 @@ import pytest
 from app import app
 from db_router import get_db_for_firm, reset_router
 from lib.portal_auth import (
+    DEFAULT_PORTAL_URL,
     get_portal_base_url,
     get_portal_dashboard_url,
     get_portal_login_url,
+    get_portal_logout_url,
     get_portal_users_url,
 )
 from lib.subscription_packages import (
@@ -41,6 +43,12 @@ def test_portal_urls_use_nexal_portal_url_env(audit_env):
     assert get_portal_dashboard_url() == f"{PORTAL_TEST_URL}/portal"
     assert get_portal_users_url() == f"{PORTAL_TEST_URL}/portal/users"
     assert get_portal_login_url().startswith(f"{PORTAL_TEST_URL}/login")
+    assert get_portal_logout_url() == f"{PORTAL_TEST_URL}/"
+
+
+def test_default_portal_url_points_to_vercel_not_parked_domain():
+    assert DEFAULT_PORTAL_URL == "https://nexal-legal.vercel.app"
+    assert "nexallegal.co.uk/portal" not in DEFAULT_PORTAL_URL
 
 
 def test_no_hardcoded_production_portal_urls_in_templates():
@@ -136,7 +144,7 @@ def test_package_limits_match_subscription_definitions():
     assert package_display_label("practice_plus") == "Practice Plus (£149/month)"
 
 
-def test_logout_redirects_to_portal_dashboard_not_ledger_login(audit_env):
+def test_logout_redirects_to_public_portal_not_dashboard_or_ledger_login(audit_env):
     portal_firm_id = str(uuid.uuid4())
     token = generate_sso_token(
         user_id=str(uuid.uuid4()),
@@ -155,5 +163,7 @@ def test_logout_redirects_to_portal_dashboard_not_ledger_login(audit_env):
     client.get("/auth/sso?token=" + token)
     response = client.get("/logout")
     assert response.status_code == 302
-    assert response.location == get_portal_dashboard_url()
+    assert response.location == get_portal_logout_url()
+    assert response.location.endswith("/")
+    assert "/portal" not in response.location.replace(PORTAL_TEST_URL, "")
     assert "/login" not in response.location.replace(PORTAL_TEST_URL, "")

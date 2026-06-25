@@ -11,6 +11,7 @@ from db_router import get_db_for_firm, reset_router
 from lib.portal_auth import (
     get_portal_dashboard_url,
     get_portal_login_url,
+    get_portal_logout_url,
     get_portal_users_url,
 )
 from nexal_platform.provision import provision_firm
@@ -107,23 +108,23 @@ def test_scenario2_login_clears_stale_session_keys(phase4e_env):
         assert "firm_id" not in sess
 
 
-# Scenario 3: Ledger logout redirects to Portal dashboard
-def test_scenario3_logout_redirects_to_portal_dashboard(phase4e_env):
+# Scenario 3: Ledger logout redirects to public Portal site
+def test_scenario3_logout_redirects_to_portal_homepage(phase4e_env):
     client, _, _, _ = _provision_and_sso()
     response = client.get("/logout")
     assert response.status_code == 302
-    assert response.location == get_portal_dashboard_url()
-    assert response.location == f"{PORTAL_TEST_URL}/portal"
+    assert response.location == get_portal_logout_url()
+    assert response.location == f"{PORTAL_TEST_URL}/"
 
     with client.session_transaction() as sess:
         assert not sess.get("user_id")
 
 
-def test_scenario3_sso_logout_redirects_to_portal(phase4e_env):
+def test_scenario3_sso_logout_redirects_to_portal_homepage(phase4e_env):
     client, _, _, _ = _provision_and_sso()
     response = client.get("/auth/sso/logout")
     assert response.status_code == 302
-    assert response.location == f"{PORTAL_TEST_URL}/portal"
+    assert response.location == f"{PORTAL_TEST_URL}/"
 
 
 # Scenario 4: Legacy auth routes redirect to Portal (no Ledger auth UI)
