@@ -283,9 +283,19 @@ class PlatformDatabase:
             row = conn.execute("SELECT * FROM workspaces WHERE firm_id = ?", (firm_id,)).fetchone()
             if row is None:
                 raise KeyError(f"Workspace not found for firm: {firm_id}")
-            return dict(row)
+            workspace = dict(row)
         finally:
             conn.close()
+
+        from nexal_platform.config import resolve_workspace_database_path
+
+        workspace["database_path"] = resolve_workspace_database_path(
+            self,
+            firm_id,
+            workspace["database_path"],
+            self.paths,
+        )
+        return workspace
 
     def get_user(self, user_id: str) -> Dict[str, Any]:
         conn = self.get_connection()

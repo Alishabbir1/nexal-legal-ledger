@@ -282,30 +282,57 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
 def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Validate firm, resolve user, and populate Flask session."""
     from lib.firm_package import cache_tier_in_tenant_db, resolve_firm_tier
+    from lib.sso_trace import log_sso_detail, sso_stage
     from nexal_platform.config import get_runtime_data_root
 
+    email = jwt_payload.get("email")
     portal_firm_id = str(jwt_payload["firm_id"])
-    logger.info(
-        "SSO establish: email=%s portal_firm_id=%s portal_user_id=%s data_root=%s",
-        jwt_payload.get("email"),
-        portal_firm_id,
-        jwt_payload.get("sub"),
-        get_runtime_data_root(),
+    log_sso_detail(
+        email,
+        "jwt_decoded",
+        portal_firm_id=portal_firm_id,
+        portal_user_id=jwt_payload.get("sub"),
+        data_root=get_runtime_data_root(),
     )
 
-    platform_firm = resolve_platform_firm(portal_firm_id, jwt_payload)
+    platform_firm = sso_stage(
+        email,
+        "resolve_platform_firm",
+        lambda: resolve_platform_firm(portal_firm_id, jwt_payload),
+    )
     platform_firm_id = platform_firm["id"]
+    log_sso_detail(
+        email,
+        "firm_located",
+        platform_firm_id=platform_firm_id,
+        portal_firm_id=portal_firm_id,
+    )
 
     from nexal_platform.platform_db import PlatformDatabase
 
-    workspace = PlatformDatabase().get_workspace_for_firm(platform_firm_id)
-    logger.info(
-        "SSO tenant resolved: platform_firm_id=%s workspace_db=%s",
-        platform_firm_id,
-        workspace.get("database_path"),
+    workspace = sso_stage(
+        email,
+        "workspace_lookup",
+        lambda: PlatformDatabase().get_workspace_for_firm(platform_firm_id),
+    )
+    log_sso_detail(
+        email,
+        "database_path",
+        workspace_db=workspace.get("database_path"),
+        workspace_status=workspace.get("status"),
     )
 
-    ledger_user = ensure_portal_user_in_ledger(jwt_payload, platform_firm_id)
+    ledger_user = sso_stage(
+        email,
+        "ledger_user_lookup",
+        lambda: ensure_portal_user_in_ledger(jwt_payload, platform_firm_id),
+    )
+    log_sso_detail(
+        email,
+        "ledger_user_found",
+        user_id=ledger_user.get("user_id"),
+        username=ledger_user.get("username"),
+    )
     jwt_payload["username"] = ledger_user["username"]
     session_data = build_session_from_token(
         jwt_payload,
@@ -319,7 +346,11 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
     for key, value in session_data.items():
         flask_session[key] = value
     flask_session["sso_established_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    tenant_db = get_db_for_firm(platform_firm_id)
+    tenant_db = sso_stage(
+        email,
+        "tenant_open",
+        lambda: get_db_for_firm(platform_firm_id),
+    )
     from lib.portal_password_sync import on_sso_login_password_sync
 
     on_sso_login_password_sync(tenant_db, ledger_user["user_id"], portal_password_hash)
