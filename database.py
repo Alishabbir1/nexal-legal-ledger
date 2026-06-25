@@ -74,15 +74,10 @@ def _log_db_retry(operation: str, attempt: int, error: Exception):
 
 
 def _get_data_dir() -> str:
-    """Return the persistent user data directory for the application."""
-    import sys
-    if getattr(sys, 'frozen', False):
-        base = os.path.join(
-            os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
-            'SolicitorLedger'
-        )
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
+    """Return the persistent runtime data directory for the application."""
+    from nexal_platform.config import get_runtime_data_root
+
+    base = get_runtime_data_root()
     os.makedirs(base, exist_ok=True)
     return base
 

@@ -22,7 +22,13 @@ echo "HEAD: $(git rev-parse --short HEAD) — $(git log -1 --format=%s)"
 python3 -m pytest tests/test_phase4b_sso.py tests/test_phase4e_sso_only.py tests/test_deploy_cli_scripts.py -q --tb=short
 
 echo ""
+echo "Verify systemd NEXAL_DATA_DIR:"
+systemctl show "${SERVICE}" -p Environment --value | tr ' ' '\n' | grep NEXAL_DATA_DIR || echo "WARNING: NEXAL_DATA_DIR not set on ${SERVICE}"
+
+echo ""
 echo "Repair portal firm tenant (provision or rebuild workspace/DB):"
+python3 scripts/migrate_tenant_paths.py --apply
+
 python3 scripts/repair_portal_tenant.py \
   --portal-firm-id "${PORTAL_FIRM_ID}" \
   --name "new" \

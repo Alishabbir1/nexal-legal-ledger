@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from typing import Any, Dict, Optional
 
-from nexal_platform.config import get_platform_paths
+from nexal_platform.config import get_platform_paths, resolve_workspace_database_path
 from nexal_platform.platform_db import PlatformDatabase
 from nexal_platform.provision import provision_firm
 from nexal_platform.template import clone_template_to_firm_db, ensure_template_database
@@ -90,7 +90,12 @@ def ensure_firm_tenant_ready(
         _finalize_repaired_tenant(firm, tenant_db_path, jwt_payload)
         return workspace
 
-    db_path = workspace["database_path"]
+    db_path = resolve_workspace_database_path(
+        platform,
+        firm_id,
+        workspace["database_path"],
+        paths,
+    )
     if not _tenant_database_is_valid(db_path):
         logger.warning(
             "Repairing invalid tenant database for portal firm %s at %s",
@@ -112,7 +117,7 @@ def ensure_firm_tenant_ready(
             except Exception as exc:
                 logger.warning("Could not sync subscription tier for firm %s: %s", firm_id, exc)
 
-    return workspace
+    return platform.get_workspace_for_firm(firm_id)
 
 
 def _finalize_repaired_tenant(

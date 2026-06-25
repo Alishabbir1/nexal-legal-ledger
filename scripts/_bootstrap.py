@@ -8,8 +8,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def bootstrap_repo_root() -> str:
-    """Insert repo root on sys.path and chdir so VPS CLI scripts work reliably."""
+    """Insert repo root on sys.path for CLI imports without changing cwd."""
     if _REPO_ROOT not in sys.path:
         sys.path.insert(0, _REPO_ROOT)
-    os.chdir(_REPO_ROOT)
     return _REPO_ROOT

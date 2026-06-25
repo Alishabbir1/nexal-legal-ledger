@@ -174,6 +174,26 @@ class PlatformDatabase:
             conn.close()
         return self.get_workspace_for_firm(firm_id)
 
+    def update_workspace_database_path(self, firm_id: str, database_path: str) -> Dict[str, Any]:
+        """Update workspace tenant database path (e.g. after remapping forbidden paths)."""
+        now = _utc_now()
+        conn = self.get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE workspaces
+                SET database_path = ?, updated_at = ?
+                WHERE firm_id = ?
+                """,
+                (database_path, now, firm_id),
+            )
+            if conn.total_changes == 0:
+                raise KeyError(f"Workspace not found for firm: {firm_id}")
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_workspace_for_firm(firm_id)
+
     def create_user(
         self,
         firm_id: str,
