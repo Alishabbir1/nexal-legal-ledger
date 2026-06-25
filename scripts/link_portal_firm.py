@@ -4,6 +4,10 @@ import argparse
 import json
 import sys
 
+from _bootstrap import bootstrap_repo_root
+
+bootstrap_repo_root()
+
 from nexal_platform.portal_link import resolve_active_portal_firm, slug_from_portal_firm
 from nexal_platform.provision import provision_firm
 
