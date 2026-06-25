@@ -37,6 +37,35 @@ def _sso_error_response(exc: Exception, status: int = 401):
     return jsonify({"error": str(exc), "code": "SSO_FAILED"}), status
 
 
+def _handle_sso_exception(exc: Exception):
+    """Map SSO failures to controlled HTTP responses — never leak a raw 500."""
+    if isinstance(exc, (ValueError, PermissionError, KeyError, LookupError)):
+        return _sso_error_response(exc)
+    if isinstance(exc, sqlite3.Error):
+        logger.exception("SSO database error")
+        return jsonify(
+            {
+                "error": "Ledger database error during sign-in. Please contact support.",
+                "code": "SSO_DB_ERROR",
+            }
+        ), 503
+    if isinstance(exc, OSError):
+        logger.exception("SSO filesystem error")
+        return jsonify(
+            {
+                "error": "Ledger storage error during sign-in. Please contact support.",
+                "code": "SSO_STORAGE_ERROR",
+            }
+        ), 503
+    logger.exception("Unexpected SSO error")
+    return jsonify(
+        {
+            "error": "Ledger sign-in failed. Please try again or contact support.",
+            "code": "SSO_ERROR",
+        }
+    ), 503
+
+
 def register_sso_routes(app):
     """Register SSO endpoints on the Flask application."""
 
@@ -58,24 +87,8 @@ def register_sso_routes(app):
                     "redirect": url_for("client_ledger"),
                 }
             ), 200
-        except (ValueError, PermissionError, KeyError, LookupError) as exc:
-            return _sso_error_response(exc)
-        except sqlite3.Error as exc:
-            logger.exception("SSO database error")
-            return jsonify(
-                {
-                    "error": "Ledger database error during sign-in. Please contact support.",
-                    "code": "SSO_DB_ERROR",
-                }
-            ), 503
-        except OSError as exc:
-            logger.exception("SSO filesystem error")
-            return jsonify(
-                {
-                    "error": "Ledger storage error during sign-in. Please contact support.",
-                    "code": "SSO_STORAGE_ERROR",
-                }
-            ), 503
+        except Exception as exc:
+            return _handle_sso_exception(exc)
 
     @app.route("/auth/sso", methods=["GET", "POST"])
     def sso_login():
@@ -88,24 +101,8 @@ def register_sso_routes(app):
             handle_sso_login(token, session)
             next_url = safe_redirect_target(request.args.get("next"))
             return redirect(next_url)
-        except (ValueError, PermissionError, KeyError, LookupError) as exc:
-            return _sso_error_response(exc)
-        except sqlite3.Error as exc:
-            logger.exception("SSO database error")
-            return jsonify(
-                {
-                    "error": "Ledger database error during sign-in. Please contact support.",
-                    "code": "SSO_DB_ERROR",
-                }
-            ), 503
-        except OSError as exc:
-            logger.exception("SSO filesystem error")
-            return jsonify(
-                {
-                    "error": "Ledger storage error during sign-in. Please contact support.",
-                    "code": "SSO_STORAGE_ERROR",
-                }
-            ), 503
+        except Exception as exc:
+            return _handle_sso_exception(exc)
 
     @app.route("/auth/sso/status", methods=["GET"])
     def sso_status():

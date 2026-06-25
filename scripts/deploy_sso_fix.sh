@@ -14,10 +14,17 @@ echo "HEAD: $(git rev-parse --short HEAD) — $(git log -1 --format=%s)"
 python3 -m pytest tests/test_phase4b_sso.py tests/test_phase4e_sso_only.py -q --tb=short
 
 echo ""
-echo "Verify portal firm link (optional repair):"
+echo "Verify portal firm link (repair if missing):"
 python3 scripts/link_portal_firm.py \
   --portal-firm-id "${PORTAL_FIRM_ID}" \
-  --verify-only || true
+  --name "new" \
+  --owner-email sunthessmunir@gmail.com \
+  --portal-user-id 2cbf9a7d-2f8f-4c4a-9d64-fd7a24d363cc \
+  --verify-only || python3 scripts/link_portal_firm.py \
+  --portal-firm-id "${PORTAL_FIRM_ID}" \
+  --name "new" \
+  --owner-email sunthessmunir@gmail.com \
+  --portal-user-id 2cbf9a7d-2f8f-4c4a-9d64-fd7a24d363cc
 
 sudo systemctl restart "${SERVICE}"
 sleep 2

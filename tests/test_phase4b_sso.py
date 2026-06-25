@@ -264,3 +264,66 @@ def test_expired_token_rejected(phase4b_env, monkeypatch):
     token = generate_sso_token("u1", "expired@example.com", "portal-firm-x", role="staff")
     with pytest.raises(ValueError, match="expired"):
         validate_sso_token(token)
+
+
+def test_sso_repairs_tenant_path_that_is_a_directory(phase4b_env):
+    import os
+
+    from db_router import reset_router
+    from nexal_platform.platform_db import PlatformDatabase
+
+    reset_router()
+    from app import app
+
+    portal_firm_id = "dir-tenant-" + uuid.uuid4().hex[:8]
+    platform = PlatformDatabase()
+    firm = platform.create_firm(
+        name="Directory Tenant Firm",
+        slug=slug_from_portal_firm("Directory Tenant Firm", portal_firm_id),
+        portal_firm_id=portal_firm_id,
+    )
+    db_path = platform.paths.tenant_db_path(firm["id"])
+    os.makedirs(db_path, exist_ok=True)
+    platform.create_workspace(firm_id=firm["id"], database_path=db_path)
+
+    token = generate_sso_token(
+        user_id=str(uuid.uuid4()),
+        email="dir-tenant@example.com",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        extra={"firm_name": "Directory Tenant Firm"},
+    )
+
+    client = app.test_client()
+    response = client.get("/auth/sso?token=" + token)
+    assert response.status_code == 302
+    assert os.path.isfile(db_path)
+    assert os.path.getsize(db_path) > 512
+
+
+def test_sso_never_returns_500_on_unexpected_error(phase4b_env, monkeypatch):
+    from db_router import reset_router
+
+    reset_router()
+    from app import app
+    import firm_middleware
+
+    _provision_linked_firm("FIRM500", "Five Hundred Firm", "portal-firm-500")
+    token = generate_sso_token(
+        user_id="portal-user-500",
+        email="five@example.com",
+        firm_id="portal-firm-500",
+        role="firm_admin",
+    )
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("simulated unexpected failure")
+
+    monkeypatch.setattr(firm_middleware, "establish_sso_session", boom)
+
+    client = app.test_client()
+    response = client.get("/auth/sso?token=" + token)
+    assert response.status_code == 503
+    data = response.get_json()
+    assert data["code"] == "SSO_ERROR"
+    assert "500" not in (response.get_data(as_text=True) or "")

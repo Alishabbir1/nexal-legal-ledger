@@ -4,6 +4,7 @@ Phase 4B — link portal firms to ledger platform tenants.
 import logging
 import os
 import re
+import shutil
 import sqlite3
 from typing import Any, Dict, Optional
 
@@ -151,7 +152,10 @@ def _ensure_tenant_database_file(
     if os.path.exists(target_path):
         if not allow_repair:
             raise ValueError(f"Tenant database invalid: {target_path}")
-        os.remove(target_path)
+        if os.path.isdir(target_path):
+            shutil.rmtree(target_path)
+        else:
+            os.remove(target_path)
 
     return clone_template_to_firm_db(template_path, target_path)
 
