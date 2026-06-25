@@ -93,6 +93,10 @@ class Database:
     def __init__(self, db_path: str = None, is_template: bool = False, skip_user_seed: bool = False):
         if db_path is None:
             db_path = _default_db_path()
+        else:
+            from nexal_platform.config import require_safe_tenant_db_path
+
+            db_path = require_safe_tenant_db_path(db_path, context="Database.__init__")
         self.db_path = db_path
         self.is_template = is_template
         self.skip_user_seed = skip_user_seed

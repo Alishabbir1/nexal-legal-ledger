@@ -50,6 +50,28 @@ def test_pre_fix_failure_line_is_os_path_isfile_on_root_path():
         os.path.isfile(db_path)
 
 
+def test_startup_repair_removes_forbidden_paths_before_sso(monkeypatch):
+    """PlatformDatabase init must remap stale paths before any SSO request."""
+    with tempfile.TemporaryDirectory() as tmp:
+        data_root = os.path.join(tmp, "runtime-data")
+        monkeypatch.setenv("NEXAL_DATA_DIR", data_root)
+
+        platform = PlatformDatabase()
+        firm = platform.create_firm(
+            name="new",
+            slug="sunthess-startup-repair",
+            portal_firm_id=PORTAL_FIRM_ID,
+        )
+        forbidden = FORBIDDEN_PREFIX + firm["id"] + "/solicitor_ledger.db"
+        platform.create_workspace(firm_id=firm["id"], database_path=forbidden)
+
+        PlatformDatabase()
+
+        workspace = PlatformDatabase().get_workspace_for_firm(firm["id"])
+        assert not is_forbidden_runtime_path(workspace["database_path"])
+        assert workspace["database_path"].startswith(data_root)
+
+
 def test_sunthess_production_sso_end_to_end(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         data_root = os.path.join(tmp, "runtime-data")

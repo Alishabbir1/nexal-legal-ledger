@@ -73,7 +73,9 @@ def _get_data_dir() -> str:
             'SolicitorLedger'
         )
     else:
-        d = os.path.dirname(os.path.abspath(__file__))
+        from nexal_platform.config import get_runtime_data_root
+
+        d = get_runtime_data_root()
     os.makedirs(d, exist_ok=True)
     return d
 

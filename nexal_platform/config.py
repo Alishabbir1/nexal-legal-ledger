@@ -124,3 +124,42 @@ def resolve_workspace_database_path(platform, firm_id: str, stored_path: str, pa
         platform.update_workspace_database_path(firm_id, canonical)
         return canonical
     return stored_path
+
+
+def repair_all_stale_workspace_paths(platform) -> int:
+    """
+    Scan platform.db and remap every workspace.database_path that points outside
+    the runtime data root (e.g. stale /root/nexal-legal-ledger deploy paths).
+    """
+    paths = platform.paths
+    conn = platform.get_connection()
+    try:
+        rows = conn.execute("SELECT firm_id, database_path FROM workspaces").fetchall()
+    finally:
+        conn.close()
+
+    repaired = 0
+    for row in rows:
+        firm_id = row["firm_id"]
+        stored = row["database_path"]
+        if is_forbidden_runtime_path(stored) or not path_is_under_runtime_root(stored, paths.root):
+            resolve_workspace_database_path(platform, firm_id, stored, paths)
+            repaired += 1
+    if repaired:
+        logger.warning("Repaired %d stale workspace database_path(s) at startup", repaired)
+    return repaired
+
+
+def require_safe_tenant_db_path(db_path: str, *, context: str = "") -> str:
+    """
+    Reject tenant database paths that the service user cannot access.
+    Call before sqlite3.connect or os.makedirs on tenant DB paths.
+    """
+    if is_forbidden_runtime_path(db_path):
+        suffix = f" ({context})" if context else ""
+        raise PermissionError(
+            "Tenant database path points at forbidden location and must be remapped"
+            + suffix
+            + f": {db_path}"
+        )
+    return db_path

@@ -159,6 +159,12 @@ def _ensure_tenant_database_file(
     *,
     allow_repair: bool = False,
 ) -> str:
+    if is_forbidden_runtime_path(target_path):
+        raise ValueError(
+            "Refusing to access forbidden tenant path — workspace must be remapped first: "
+            + target_path
+        )
+
     if _tenant_database_is_valid(target_path):
         return target_path
 

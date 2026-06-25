@@ -96,6 +96,10 @@ class PlatformDatabase:
         finally:
             conn.close()
 
+        from nexal_platform.config import repair_all_stale_workspace_paths
+
+        repair_all_stale_workspace_paths(self)
+
     def _migrate_schema(self, cursor: sqlite3.Cursor) -> None:
         """Apply incremental schema migrations without destructive changes."""
         firm_cols = {row[1] for row in cursor.execute("PRAGMA table_info(firms)").fetchall()}
