@@ -14,6 +14,7 @@ from lib.subscription_packages import (
 from nexal_platform.platform_db import PlatformDatabase
 
 FIRM_SUBSCRIPTION_CONFIG_KEY = "firm_subscription_tier"
+FIRM_MAX_USERS_CONFIG_KEY = "firm_max_users"
 
 
 def get_platform_firm_tier(platform_firm_id: str) -> str:
@@ -55,18 +56,40 @@ def resolve_package_display_for_request(session: Dict[str, Any], db) -> str:
 
 
 def check_user_limit(db, session: Dict[str, Any]) -> Optional[str]:
-    """Return validation message when at package user limit, else None."""
+    """Return validation message when at package user limit, else None.
+
+    Uses Portal-enforced max_users from system_config when available.
+    """
     tier = resolve_firm_tier(session, db)
     active_count = db.count_billable_active_users()
-    if not can_add_billable_user(active_count, tier):
+    max_users = resolve_max_users(db, tier)
+    if active_count >= max_users:
         return user_limit_message(tier)
     return None
+
+
+def resolve_max_users(db, tier: str) -> int:
+    """
+    Resolve the effective max-users for the current firm.
+
+    Prefers the Portal-enforced value cached in system_config (which accounts
+    for admin overrides) over the hardcoded package default.
+    """
+    cached = db.get_config(FIRM_MAX_USERS_CONFIG_KEY)
+    if cached:
+        try:
+            value = int(cached)
+            if value > 0:
+                return value
+        except (ValueError, TypeError):
+            pass
+    return max_users_for_tier(tier)
 
 
 def package_usage_summary(db, session: Dict[str, Any]) -> Dict[str, Any]:
     tier = resolve_firm_tier(session, db)
     active_count = db.count_billable_active_users()
-    max_users = max_users_for_tier(tier)
+    max_users = resolve_max_users(db, tier)
     return {
         "tier": tier,
         "label": package_display_label(tier),

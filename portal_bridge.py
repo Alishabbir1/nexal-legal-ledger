@@ -53,17 +53,28 @@ def _sync_portal_user_roles(
     user_id: int,
     platform_firm_id: str,
     portal_role: str,
+    full_name: Optional[str] = None,
 ) -> None:
-    """Keep ledger role columns aligned with portal SSO on each login."""
+    """Keep ledger role columns and display name aligned with Portal SSO on each login."""
     ledger_role = map_portal_role_to_ledger(portal_role)
-    conn.execute(
-        """
-        UPDATE users
-        SET role = ?, portal_role = ?, firm_id = ?, active = 1
-        WHERE user_id = ?
-        """,
-        (ledger_role, portal_role, platform_firm_id, user_id),
-    )
+    if full_name:
+        conn.execute(
+            """
+            UPDATE users
+            SET role = ?, portal_role = ?, firm_id = ?, active = 1, full_name = ?
+            WHERE user_id = ?
+            """,
+            (ledger_role, portal_role, platform_firm_id, full_name, user_id),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE users
+            SET role = ?, portal_role = ?, firm_id = ?, active = 1
+            WHERE user_id = ?
+            """,
+            (ledger_role, portal_role, platform_firm_id, user_id),
+        )
     conn.commit()
 
 
@@ -91,6 +102,7 @@ def resolve_portal_user(
     portal_role: Optional[str] = None,
     password_hash: Optional[str] = None,
     portal_customer_id: Optional[str] = None,
+    full_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Find existing ledger user linked to portal identity."""
     from lib.portal_password_sync import sync_portal_password_hash
@@ -108,7 +120,9 @@ def resolve_portal_user(
         ).fetchone()
         if row:
             if portal_role:
-                _sync_portal_user_roles(conn, row["user_id"], platform_firm_id, portal_role)
+                _sync_portal_user_roles(
+                    conn, row["user_id"], platform_firm_id, portal_role, full_name
+                )
                 row = conn.execute(
                     """
                     SELECT user_id, username, role, firm_id, portal_user_id, email
@@ -170,7 +184,9 @@ def resolve_portal_user(
                     conn.commit()
 
                 if portal_role:
-                    _sync_portal_user_roles(conn, row["user_id"], platform_firm_id, portal_role)
+                    _sync_portal_user_roles(
+                        conn, row["user_id"], platform_firm_id, portal_role, full_name
+                    )
                 updated = conn.execute(
                     "SELECT user_id, username, role, firm_id, portal_user_id, email FROM users WHERE user_id = ?",
                     (row["user_id"],),
@@ -189,6 +205,7 @@ def provision_portal_user(
     portal_role: str = "firm_admin",
     preferred_username: Optional[str] = None,
     password_hash: Optional[str] = None,
+    full_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a ledger user automatically from portal identity.
 
@@ -220,8 +237,8 @@ def provision_portal_user(
             """
             INSERT INTO users (
                 username, password_hash, role, active,
-                portal_user_id, email, firm_id, portal_role, temporary_password
-            ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, 0)
+                portal_user_id, email, firm_id, portal_role, temporary_password, full_name
+            ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, 0, ?)
             """,
             (
                 username,
@@ -231,6 +248,7 @@ def provision_portal_user(
                 email.lower(),
                 platform_firm_id,
                 portal_role,
+                full_name,
             ),
         )
         conn.commit()
@@ -254,6 +272,12 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
     portal_password_hash = payload.get("password_hash")
     portal_customer_id = payload.get("portal_customer_id")
 
+    first_name = (payload.get("first_name") or "").strip()
+    last_name = (payload.get("last_name") or "").strip()
+    full_name: Optional[str] = None
+    if first_name or last_name:
+        full_name = " ".join(filter(None, [first_name, last_name]))
+
     try:
         return resolve_portal_user(
             email,
@@ -263,6 +287,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
             portal_role,
             portal_password_hash,
             portal_customer_id,
+            full_name,
         )
     except LookupError as exc:
         if "conflict" in str(exc).lower():
@@ -274,6 +299,7 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
             portal_role,
             preferred_username,
             portal_password_hash,
+            full_name,
         )
 
 
@@ -355,6 +381,19 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
     tenant_db.reset_recovery_confirm_attempts(ledger_user["user_id"])
     tier = resolve_firm_tier(session_data, tenant_db)
     cache_tier_in_tenant_db(tenant_db, tier)
+
+    # Cache Portal-enforced max_users so the Ledger display reflects overrides.
+    portal_max_users = jwt_payload.get("max_users")
+    if portal_max_users is not None:
+        try:
+            tenant_db.set_config(
+                "firm_max_users",
+                str(int(portal_max_users)),
+                "Maximum users (Portal-enforced, synced via SSO)",
+            )
+        except Exception as exc:
+            logger.warning("Could not cache max_users for firm %s: %s", platform_firm_id, exc)
+
     return session_data
 
 

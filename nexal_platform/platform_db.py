@@ -238,6 +238,20 @@ class PlatformDatabase:
             conn.close()
         return self.get_firm(firm_id)
 
+    def update_firm_name(self, firm_id: str, name: str) -> Dict[str, Any]:
+        """Update firm display name from Portal SSO (keeps platform in sync)."""
+        now = _utc_now()
+        conn = self.get_connection()
+        try:
+            conn.execute(
+                "UPDATE firms SET name = ?, updated_at = ? WHERE id = ?",
+                (name.strip(), now, firm_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_firm(firm_id)
+
     def get_firm(self, firm_id: str) -> Dict[str, Any]:
         conn = self.get_connection()
         try:

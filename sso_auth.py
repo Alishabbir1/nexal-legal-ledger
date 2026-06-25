@@ -7,8 +7,9 @@ import hmac
 import json
 import os
 import secrets
+import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 SSO_SECRET_KEY = os.environ.get(
     "SSO_SECRET_KEY",
@@ -20,6 +21,29 @@ SSO_ISSUER = "nexal-portal"
 SSO_AUDIENCE = "nexal-ledger"
 
 REQUIRED_CLAIMS = ("sub", "email", "firm_id", "role")
+
+# ── jti replay protection ─────────────────────────────────────────────────────
+# Tracks (jti, exp) pairs for the life of the token TTL. Any token whose jti
+# has already been seen is rejected, preventing token replay attacks.
+_jti_lock = threading.Lock()
+_jti_seen: Dict[str, int] = {}  # jti -> exp (unix timestamp)
+
+
+def _purge_expired_jtis(now: int) -> None:
+    """Remove expired jti entries. Must be called with _jti_lock held."""
+    expired = [k for k, exp in _jti_seen.items() if exp < now]
+    for k in expired:
+        del _jti_seen[k]
+
+
+def _check_and_record_jti(jti: str, exp: int) -> None:
+    """Raise ValueError if jti was already used; otherwise record it."""
+    now = int(time.time())
+    with _jti_lock:
+        _purge_expired_jtis(now)
+        if jti in _jti_seen:
+            raise ValueError("JWT replay detected: token has already been used")
+        _jti_seen[jti] = exp
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -102,6 +126,10 @@ def validate_sso_token(token: str) -> Dict[str, Any]:
         if claim not in payload or payload[claim] in (None, ""):
             raise ValueError("JWT missing required claim: " + claim)
 
+    jti = payload.get("jti")
+    if jti:
+        _check_and_record_jti(str(jti), int(payload.get("exp", 0)))
+
     return payload
 
 
@@ -111,9 +139,41 @@ def extract_firm_from_token(token: str) -> str:
     return str(payload["firm_id"])
 
 
-def is_token_valid(token: str) -> bool:
+def _validate_sso_token_no_jti_record(token: str) -> Dict[str, Any]:
+    """Validate token without recording the jti. Used only for pre-flight checks."""
+    if not token or not isinstance(token, str):
+        raise ValueError("SSO token is missing or not a string")
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("Malformed JWT: expected 3 parts")
+    header_b64, payload_b64, provided_sig = parts
+    expected_sig = _sign(header_b64, payload_b64, SSO_SECRET_KEY)
+    if not hmac.compare_digest(expected_sig, provided_sig):
+        raise ValueError("JWT signature invalid")
     try:
-        validate_sso_token(token)
+        payload = json.loads(_b64url_decode(payload_b64))
+    except Exception as exc:
+        raise ValueError("JWT payload decode error: " + str(exc)) from exc
+    now = int(time.time())
+    if int(payload.get("exp", 0)) < now:
+        raise ValueError("JWT expired")
+    if payload.get("aud") != SSO_AUDIENCE:
+        raise ValueError("JWT audience mismatch")
+    if payload.get("iss") != SSO_ISSUER:
+        raise ValueError("JWT issuer mismatch")
+    for claim in REQUIRED_CLAIMS:
+        if claim not in payload or payload[claim] in (None, ""):
+            raise ValueError("JWT missing required claim: " + claim)
+    return payload
+
+
+def is_token_valid(token: str) -> bool:
+    """Return True if the token is structurally valid and not expired.
+
+    Does NOT consume the jti — use validate_sso_token for actual authentication.
+    """
+    try:
+        _validate_sso_token_no_jti_record(token)
         return True
     except ValueError:
         return False

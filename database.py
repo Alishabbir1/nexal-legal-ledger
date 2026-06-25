@@ -617,6 +617,7 @@ class Database:
                 ('firm_id', 'TEXT'),
                 ('portal_role', 'TEXT'),
                 ('is_system', 'INTEGER DEFAULT 0'),
+                ('full_name', 'TEXT'),
             ]
             for col_name, col_def in columns_to_add:
                 if col_name not in existing:

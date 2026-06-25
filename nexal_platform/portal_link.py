@@ -126,6 +126,13 @@ def ensure_firm_tenant_ready(
             except Exception as exc:
                 logger.warning("Could not sync subscription tier for firm %s: %s", firm_id, exc)
 
+        firm_name = (jwt_payload.get("firm_name") or "").strip()
+        if firm_name:
+            try:
+                platform.update_firm_name(firm_id, firm_name)
+            except Exception as exc:
+                logger.warning("Could not sync firm_name for firm %s: %s", firm_id, exc)
+
     return platform.get_workspace_for_firm(firm_id)
 
 
