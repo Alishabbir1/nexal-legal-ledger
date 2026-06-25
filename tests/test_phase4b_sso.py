@@ -6,6 +6,7 @@ import uuid
 import pytest
 
 from db_router import get_db_for_firm
+from nexal_platform.portal_link import slug_from_portal_firm
 from nexal_platform.provision import provision_firm
 from portal_bridge import ensure_portal_user_in_ledger, provision_portal_user, resolve_platform_firm
 from sso_auth import (
@@ -135,7 +136,7 @@ def test_auto_provision_portal_firm_on_first_sso(phase4b_env):
         firm_id=portal_firm_id,
         role="firm_admin",
         username="sunthessmunir",
-        extra={"firm_name": "new"},
+        extra={"firm_name": "new", "subscription_tier": "essential"},
     )
 
     client = app.test_client()
@@ -150,6 +151,79 @@ def test_auto_provision_portal_firm_on_first_sso(phase4b_env):
         assert sess.get("sso_login") is True
         assert sess.get("firm_id") == firm["id"]
         assert sess.get("user_id") is not None
+
+
+def test_sso_repairs_orphan_platform_firm_missing_workspace(phase4b_env):
+    import os
+
+    from db_router import get_db_for_firm, reset_router
+    from nexal_platform.platform_db import PlatformDatabase
+
+    reset_router()
+    from app import app
+
+    portal_firm_id = "498205b5-0d17-453c-a0de-e507955e94fb"
+    platform = PlatformDatabase()
+    firm = platform.create_firm(
+        name="new",
+        slug="new-498205b5",
+        portal_firm_id=portal_firm_id,
+        subscription_tier="essential",
+    )
+
+    token = generate_sso_token(
+        user_id="2cbf9a7d-2f8f-4c4a-9d64-fd7a24d363cc",
+        email="sunthessmunir@gmail.com",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        username="sunthessmunir",
+        extra={"firm_name": "new", "subscription_tier": "essential"},
+    )
+
+    client = app.test_client()
+    response = client.get("/auth/sso?token=" + token)
+    assert response.status_code == 302
+
+    workspace = platform.get_workspace_for_firm(firm["id"])
+    assert os.path.isfile(workspace["database_path"])
+    tenant_db = get_db_for_firm(firm["id"])
+    assert tenant_db.get_config("provisioned_tenant") == "1"
+
+
+def test_sso_repairs_corrupt_tenant_database(phase4b_env):
+    import os
+
+    from db_router import reset_router
+    from nexal_platform.platform_db import PlatformDatabase
+
+    reset_router()
+    from app import app
+
+    portal_firm_id = "orphan-corrupt-" + uuid.uuid4().hex[:8]
+    platform = PlatformDatabase()
+    firm = platform.create_firm(
+        name="Corrupt Firm",
+        slug=slug_from_portal_firm("Corrupt Firm", portal_firm_id),
+        portal_firm_id=portal_firm_id,
+    )
+    db_path = platform.paths.tenant_db_path(firm["id"])
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    with open(db_path, "wb") as handle:
+        handle.write(b"not-a-database")
+    platform.create_workspace(firm_id=firm["id"], database_path=db_path)
+
+    token = generate_sso_token(
+        user_id=str(uuid.uuid4()),
+        email="corrupt@example.com",
+        firm_id=portal_firm_id,
+        role="firm_admin",
+        extra={"firm_name": "Corrupt Firm"},
+    )
+
+    client = app.test_client()
+    response = client.get("/auth/sso?token=" + token)
+    assert response.status_code == 302
+    assert os.path.getsize(db_path) > 512
 
 
 def test_flask_sso_login_endpoint(phase4b_env):

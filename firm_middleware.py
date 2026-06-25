@@ -1,6 +1,8 @@
 """
 firm_middleware.py - Phase 4B: Flask SSO routes and firm-aware helpers.
 """
+import logging
+import sqlite3
 from functools import wraps
 from typing import Any, Dict, Tuple
 
@@ -10,6 +12,8 @@ from db_router import get_db_for_firm
 from nexal_platform.session_security import safe_redirect_target
 from portal_bridge import clear_sso_session, establish_sso_session, log_sso_audit
 from sso_auth import validate_sso_token
+
+logger = logging.getLogger(__name__)
 
 
 def handle_sso_login(token: str, flask_session) -> Tuple[str, str]:
@@ -26,6 +30,11 @@ def handle_sso_login(token: str, flask_session) -> Tuple[str, str]:
         "Portal SSO login for firm " + session_data["firm_id"],
     )
     return session_data["username"], session_data["firm_id"]
+
+
+def _sso_error_response(exc: Exception, status: int = 401):
+    logger.warning("SSO login failed: %s", exc)
+    return jsonify({"error": str(exc), "code": "SSO_FAILED"}), status
 
 
 def register_sso_routes(app):
@@ -50,7 +59,23 @@ def register_sso_routes(app):
                 }
             ), 200
         except (ValueError, PermissionError, KeyError, LookupError) as exc:
-            return jsonify({"error": str(exc), "code": "SSO_FAILED"}), 401
+            return _sso_error_response(exc)
+        except sqlite3.Error as exc:
+            logger.exception("SSO database error")
+            return jsonify(
+                {
+                    "error": "Ledger database error during sign-in. Please contact support.",
+                    "code": "SSO_DB_ERROR",
+                }
+            ), 503
+        except OSError as exc:
+            logger.exception("SSO filesystem error")
+            return jsonify(
+                {
+                    "error": "Ledger storage error during sign-in. Please contact support.",
+                    "code": "SSO_STORAGE_ERROR",
+                }
+            ), 503
 
     @app.route("/auth/sso", methods=["GET", "POST"])
     def sso_login():
@@ -64,7 +89,23 @@ def register_sso_routes(app):
             next_url = safe_redirect_target(request.args.get("next"))
             return redirect(next_url)
         except (ValueError, PermissionError, KeyError, LookupError) as exc:
-            return jsonify({"error": str(exc), "code": "SSO_FAILED"}), 401
+            return _sso_error_response(exc)
+        except sqlite3.Error as exc:
+            logger.exception("SSO database error")
+            return jsonify(
+                {
+                    "error": "Ledger database error during sign-in. Please contact support.",
+                    "code": "SSO_DB_ERROR",
+                }
+            ), 503
+        except OSError as exc:
+            logger.exception("SSO filesystem error")
+            return jsonify(
+                {
+                    "error": "Ledger storage error during sign-in. Please contact support.",
+                    "code": "SSO_STORAGE_ERROR",
+                }
+            ), 503
 
     @app.route("/auth/sso/status", methods=["GET"])
     def sso_status():
