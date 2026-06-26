@@ -5,9 +5,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from database import Database
 
-from nexal_platform.config import PlatformPaths, get_platform_paths, resolve_workspace_database_path
+from nexal_platform.config import PlatformPaths, get_platform_paths, is_forbidden_runtime_path, resolve_workspace_database_path
 from nexal_platform.platform_db import PlatformDatabase
-
 
 class TenantRouter:
     """Routes a firm identifier to its dedicated ledger Database instance."""
@@ -29,9 +28,21 @@ class TenantRouter:
         )
 
     def get_database(self, firm_id: str) -> Database:
-        """Return a Database instance bound to the firm's isolated ledger database."""
+        """Return a Database instance bound to the firm's isolated ledger database.
+
+        If the cached entry points at a forbidden runtime path (e.g. a stale
+        /root/nexal-legal-ledger path left over from before a workspace repair),
+        the entry is evicted and a fresh, correct path is resolved from
+        platform.db.  This makes stale-cache path failures impossible across
+        the entire platform regardless of when the repair ran.
+        """
         if firm_id in self._cache:
-            return self._cache[firm_id]
+            cached_db = self._cache[firm_id]
+            if is_forbidden_runtime_path(getattr(cached_db, 'db_path', None)):
+                # Stale cache entry with forbidden path — evict and re-resolve.
+                del self._cache[firm_id]
+            else:
+                return cached_db
 
         db_path = self.resolve_database_path(firm_id)
         db = Database(db_path=db_path)
