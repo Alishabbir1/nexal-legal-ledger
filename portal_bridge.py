@@ -321,6 +321,12 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
             repaired,
             email,
         )
+        # Invalidate the global TenantRouter cache so repaired paths take effect
+        # immediately.  Without this, any Database object created before the repair
+        # (pointing at a forbidden path) would continue to be used for the rest of
+        # this process lifetime.
+        from db_router import clear_router_cache
+        clear_router_cache()
 
     log_sso_detail(
         email,
