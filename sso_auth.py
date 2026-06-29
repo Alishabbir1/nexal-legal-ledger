@@ -127,8 +127,9 @@ def validate_sso_token(token: str) -> Dict[str, Any]:
             raise ValueError("JWT missing required claim: " + claim)
 
     jti = payload.get("jti")
-    if jti:
-        _check_and_record_jti(str(jti), int(payload.get("exp", 0)))
+    if not jti:
+        raise ValueError("JWT missing required claim: jti")
+    _check_and_record_jti(str(jti), int(payload.get("exp", 0)))
 
     return payload
 

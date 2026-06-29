@@ -34,7 +34,7 @@ def handle_sso_login(token: str, flask_session) -> Tuple[str, str]:
 
 def _sso_error_response(exc: Exception, status: int = 401):
     logger.warning("SSO login failed: %s", exc)
-    return jsonify({"error": str(exc), "code": "SSO_FAILED"}), status
+    return jsonify({"error": "Sign-in failed. Please launch again from the Portal.", "code": "SSO_FAILED"}), status
 
 
 def _handle_sso_exception(exc: Exception):

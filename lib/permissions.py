@@ -26,11 +26,16 @@ def get_ledger_role() -> str:
 
 
 def is_read_only_user() -> bool:
-    return False
+    raw = (session.get("portal_role") or "").strip().lower()
+    return raw == "read_only"
 
 
 def can_modify_ledger_data(role: str = None, portal_role: str = None) -> bool:
     """Staff and Admin may create or amend operational ledger records."""
+    if portal_role is not None and str(portal_role).strip().lower() == "read_only":
+        return False
+    if portal_role is None and is_read_only_user():
+        return False
     ledger_role = (role or get_ledger_role()) or "staff"
     return ledger_role in ("admin", "staff")
 
@@ -44,15 +49,23 @@ def can_access_admin_functions(role: str = None, portal_role: str = None) -> boo
 
 def can_access_financial_functions(portal_role: str = None) -> bool:
     """Client ledger, cashbook, reconciliation."""
+    raw = (portal_role if portal_role is not None else session.get("portal_role") or "").strip().lower()
+    if raw == "read_only":
+        return True
     return normalize_portal_role(portal_role or get_portal_role()) in ("admin", "staff")
 
 
 def can_access_client_operations(portal_role: str = None) -> bool:
     """Client/matter operations."""
+    raw = (portal_role if portal_role is not None else session.get("portal_role") or "").strip().lower()
+    if raw == "read_only":
+        return True
     return normalize_portal_role(portal_role or get_portal_role()) in ("admin", "staff")
 
 
 def can_edit_client_details(portal_role: str = None) -> bool:
+    if is_read_only_user() or (portal_role or "").strip().lower() == "read_only":
+        return False
     return can_access_client_operations(portal_role)
 
 

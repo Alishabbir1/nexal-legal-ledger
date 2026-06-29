@@ -36,6 +36,7 @@ def test_normalize_portal_role(legacy_role, expected):
     [
         ("firm_admin", "admin", True, True, True, True, True, True),
         ("staff", "staff", True, False, True, True, True, True),
+        ("read_only", "staff", False, False, True, True, True, False),
     ],
 )
 def test_phase53_ledger_permission_matrix(
@@ -63,7 +64,7 @@ def test_phase53_ledger_permission_matrix(
         assert can_access_client_operations() is clients
         assert can_access_reports() is reports
         assert can_edit_client_details() is edit_clients
-        assert is_read_only_user() is False
+        assert is_read_only_user() is (portal_role == "read_only")
 
 
 def test_staff_cannot_access_ledger_admin():

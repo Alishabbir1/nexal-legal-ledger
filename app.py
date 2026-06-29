@@ -83,8 +83,21 @@ def _get_data_dir() -> str:
 _bundle_dir = _get_bundle_dir()
 _template_dir = os.path.join(_bundle_dir, 'templates')
 _static_dir = os.path.join(_bundle_dir, 'static')
-app = Flask(__name__, template_folder=_template_dir, static_folder=_static_dir)
-app.secret_key = 'sra-compliant-secret-key-change-in-production'
+_app = Flask(__name__, template_folder=_template_dir, static_folder=_static_dir)
+
+from nexal_platform.production_secrets import DEV_FLASK_SECRET, validate_production_secrets
+
+_flask_secret = (
+    os.environ.get("FLASK_SECRET_KEY")
+    or os.environ.get("SECRET_KEY")
+    or DEV_FLASK_SECRET
+)
+validate_production_secrets(
+    sso_secret=os.environ.get("SSO_SECRET_KEY") or os.environ.get("NEXAL_SSO_SECRET"),
+    flask_secret=_flask_secret,
+)
+app = _app
+app.secret_key = _flask_secret
 app.config['PERMANENT_SESSION_LIFETIME'] = 900  # 15 minutes inactivity
 
 # Legacy default database (single-tenant / pre-SSO)
