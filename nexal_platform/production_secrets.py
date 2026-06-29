@@ -24,6 +24,7 @@ def validate_production_secrets(
     *,
     sso_secret: str | None,
     flask_secret: str | None,
+    ops_secret: str | None = None,
 ) -> None:
     """Refuse startup when known development secrets are used in production."""
     if not is_production_deploy():
@@ -36,6 +37,10 @@ def validate_production_secrets(
         )
     if _is_insecure_secret("FLASK_SECRET_KEY", flask_secret, DEV_FLASK_SECRET):
         issues.append("FLASK_SECRET_KEY (or SECRET_KEY) must be set to a strong unique value.")
+    if not (ops_secret or "").strip():
+        issues.append(
+            "NEXAL_OPS_SECRET must be set for Portal backup health API (must match Portal NEXAL_OPS_SECRET)."
+        )
 
     if not issues:
         return
