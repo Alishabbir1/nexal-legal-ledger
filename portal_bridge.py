@@ -382,7 +382,7 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
 
     on_sso_login_password_sync(tenant_db, ledger_user["user_id"], portal_password_hash)
     tenant_db.reset_recovery_confirm_attempts(ledger_user["user_id"])
-    tier = resolve_firm_tier(session_data, tenant_db)
+    tier = (jwt_payload.get("subscription_tier") or jwt_payload.get("package") or jwt_payload.get("plan")) or resolve_firm_tier(session_data, tenant_db)
     cache_tier_in_tenant_db(tenant_db, tier)
 
     # Cache Portal-enforced max_users so the Ledger display reflects overrides.
