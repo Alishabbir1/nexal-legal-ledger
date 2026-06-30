@@ -245,9 +245,32 @@ def resolve_active_portal_firm(
     platform = PlatformDatabase()
     firm = ensure_portal_firm_linked(portal_firm_id, jwt_payload)
     ensure_firm_tenant_ready(platform, firm, jwt_payload)
+
+    jwt_status = (
+        str(jwt_payload.get("account_status") or "").strip().upper()
+        if jwt_payload
+        else None
+    )
+
+    # Portal is authoritative for lifecycle. When SSO carries ACTIVE, re-enable the
+    # existing platform firm/workspace (never provision a replacement).
+    if jwt_status == "ACTIVE" and firm.get("status") != "active":
+        platform.update_firm_status_by_portal_firm_id(portal_firm_id, "active")
+        from db_router import clear_router_cache
+
+        clear_router_cache()
+        firm = platform.get_firm_by_portal_firm_id(portal_firm_id) or firm
+
     if firm["status"] != "active":
         raise ValueError("Firm is not active (status: " + str(firm["status"]) + ")")
     workspace = platform.get_workspace_for_firm(firm["id"])
     if workspace["status"] != "active":
-        raise ValueError("Workspace is not active for firm: " + firm["id"])
+        if jwt_status == "ACTIVE":
+            platform.update_firm_status_by_portal_firm_id(portal_firm_id, "active")
+            from db_router import clear_router_cache
+
+            clear_router_cache()
+            workspace = platform.get_workspace_for_firm(firm["id"])
+        if workspace["status"] != "active":
+            raise ValueError("Workspace is not active for firm: " + firm["id"])
     return firm

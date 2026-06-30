@@ -37,9 +37,32 @@ def _sso_error_response(exc: Exception, status: int = 401):
     return jsonify({"error": "Sign-in failed. Please launch again from the Portal.", "code": "SSO_FAILED"}), status
 
 
+def _sso_browser_error_response(exc: Exception, status: int = 401):
+    """HTML response for browser form POST launches (never leave a blank JSON page)."""
+    logger.warning("SSO login failed: %s", exc)
+    portal_url = "https://nexal-legal.vercel.app/portal"
+    try:
+        from lib.portal_auth import get_portal_dashboard_url
+
+        portal_url = get_portal_dashboard_url()
+    except Exception:
+        pass
+    html = (
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\" />"
+        "<title>Ledger sign-in failed</title></head><body>"
+        "<p>We could not open your ledger workspace. Please return to the Portal and "
+        "click Launch Application again.</p>"
+        f"<p><a href=\"{portal_url}\">Return to Portal</a></p>"
+        "</body></html>"
+    )
+    return html, status, {"Content-Type": "text/html; charset=utf-8"}
+
+
 def _handle_sso_exception(exc: Exception):
     """Map SSO failures to controlled HTTP responses — never leak a raw 500."""
     if isinstance(exc, (ValueError, PermissionError, KeyError, LookupError)):
+        if request.method == "POST" and request.form.get("token"):
+            return _sso_browser_error_response(exc)
         return _sso_error_response(exc)
     if isinstance(exc, sqlite3.Error):
         logger.exception("SSO database error")
