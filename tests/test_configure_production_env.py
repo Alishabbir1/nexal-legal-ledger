@@ -99,5 +99,8 @@ def test_configure_production_env_main_completes_locally(tmp_path: Path, monkeyp
     written = env_file.read_text(encoding="utf-8")
     assert "FLASK_SECRET_KEY=" in written
     assert DEV_FLASK not in service_file.read_text(encoding="utf-8")
-    assert (dropin_dir / "99-nexal-env.conf").is_file()
+    dropin = (dropin_dir / "99-nexal-env.conf").read_text(encoding="utf-8")
+    assert "Environment=FLASK_SECRET_KEY=" in dropin
+    assert "Environment=SECRET_KEY=" in dropin
+    assert DEV_FLASK not in dropin
     health_mock.assert_called_once()

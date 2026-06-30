@@ -60,6 +60,39 @@ def test_bootstrap_prefers_env_file_flask_secret_over_systemd_dev_default(monkey
     assert os.environ["FLASK_SECRET_KEY"] == "unique-flask-secret-for-production"
 
 
+def test_bootstrap_strips_dev_flask_from_environ_when_env_file_has_production_key(monkeypatch, tmp_path):
+    env_file = tmp_path / "ledger.env"
+    env_file.write_text(
+        "NEXAL_PRODUCTION=true\n"
+        "NEXAL_OPS_SECRET=valid-production-secret-value\n"
+        "FLASK_SECRET_KEY=unique-flask-secret-for-production\n"
+        "SSO_SECRET_KEY=unique-sso-secret-for-production\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEXAL_LEDGER_ENV_FILE", str(env_file))
+    monkeypatch.setenv("NEXAL_PRODUCTION", "true")
+    monkeypatch.setenv("FLASK_SECRET_KEY", DEV_FLASK_SECRET)
+    monkeypatch.setenv("SECRET_KEY", DEV_FLASK_SECRET)
+    monkeypatch.setattr(ops_secret_module, "DEFAULT_ENV_FILE_PATHS", ())
+
+    bootstrap_ledger_env()
+    assert get_flask_secret() == "unique-flask-secret-for-production"
+    assert os.environ["FLASK_SECRET_KEY"] != DEV_FLASK_SECRET
+
+
+def test_bootstrap_does_not_keep_dev_flask_in_environ_without_production_key(monkeypatch):
+    monkeypatch.setenv("NEXAL_PRODUCTION", "true")
+    monkeypatch.setenv("FLASK_SECRET_KEY", DEV_FLASK_SECRET)
+    monkeypatch.setenv("SECRET_KEY", DEV_FLASK_SECRET)
+    monkeypatch.setattr(ops_secret_module, "DEFAULT_ENV_FILE_PATHS", ())
+    monkeypatch.setattr(ops_secret_module, "SYSTEMD_UNIT_PATHS", ())
+
+    bootstrap_ledger_env()
+    assert "FLASK_SECRET_KEY" not in os.environ
+    assert "SECRET_KEY" not in os.environ
+    assert get_flask_secret() == ""
+
+
 def test_bootstrap_ops_secret_env_loads_from_env_file(monkeypatch):
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
         handle.write('export NEXAL_OPS_SECRET="abc123456789012"\n')

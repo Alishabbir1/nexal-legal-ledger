@@ -160,7 +160,7 @@ def _systemd_environment_file_paths() -> list[str]:
 
 
 def _read_systemd_service_environment() -> dict[str, str]:
-    """Merge Environment= and EnvironmentFile= values from systemd unit files."""
+    """Merge Environment= from units, then EnvironmentFile= (file values win)."""
     merged: dict[str, str] = {}
     for path in _systemd_unit_paths():
         if not os.path.isfile(path):
@@ -208,32 +208,26 @@ def is_usable_flask_secret(value: Optional[str]) -> bool:
 
 
 def _load_flask_secret_into_environ() -> None:
-    """Load FLASK_SECRET_KEY; env file wins over inline systemd dev defaults."""
+    """Load FLASK_SECRET_KEY; production env file always wins over inline dev defaults."""
     for path in _candidate_env_file_paths():
         value = normalize_ops_secret(_parse_env_file(path).get("FLASK_SECRET_KEY"))
         if is_usable_flask_secret(value):
             os.environ["FLASK_SECRET_KEY"] = value  # type: ignore[assignment]
-            if not is_usable_flask_secret(os.environ.get("SECRET_KEY")):
-                os.environ["SECRET_KEY"] = value
+            os.environ["SECRET_KEY"] = value
             return
 
+    systemd_env = _read_systemd_service_environment()
     for key in ("FLASK_SECRET_KEY", "SECRET_KEY"):
-        value = normalize_ops_secret(_read_systemd_service_environment().get(key))
+        value = normalize_ops_secret(systemd_env.get(key))
         if is_usable_flask_secret(value):
             os.environ["FLASK_SECRET_KEY"] = value  # type: ignore[assignment]
             os.environ["SECRET_KEY"] = value
             return
 
+    # Drop invalid dev defaults injected by systemd; never keep them in os.environ.
     for key in ("FLASK_SECRET_KEY", "SECRET_KEY"):
-        value = normalize_ops_secret(os.environ.get(key))
-        if is_usable_flask_secret(value):
-            os.environ["FLASK_SECRET_KEY"] = value
-            os.environ["SECRET_KEY"] = value
-            return
-
-    os.environ.pop("FLASK_SECRET_KEY", None)
-    if not is_usable_flask_secret(os.environ.get("SECRET_KEY")):
-        os.environ.pop("SECRET_KEY", None)
+        if not is_usable_flask_secret(os.environ.get(key)):
+            os.environ.pop(key, None)
 
 
 def _load_env_var_into_environ(key: str) -> None:

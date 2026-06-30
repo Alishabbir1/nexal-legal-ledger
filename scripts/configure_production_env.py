@@ -89,6 +89,8 @@ def scrub_dev_flask_from_unit(path: Path, dev_flask_secret: str) -> bool:
             updated,
         )
         updated = re.sub(rf"{re.escape(key)}={re.escape(dev_flask_secret)}\s*", "", updated)
+        # Remove empty dev assignments so EnvironmentFile values are not shadowed.
+        updated = re.sub(rf"{re.escape(key)}=\s*(?=\s|$)", "", updated)
     updated = re.sub(r"Environment=\s+", "Environment=", updated)
     updated = re.sub(r"Environment=\s*$", "", updated, flags=re.MULTILINE)
     if updated != original:
@@ -97,11 +99,34 @@ def scrub_dev_flask_from_unit(path: Path, dev_flask_secret: str) -> bool:
     return False
 
 
-def ensure_dropin_env_file(dropin_dir: Path, dropin_file: Path, env_file: Path) -> None:
+def scrub_dev_flask_from_all_units(service_file: Path, service_name: str, dev_flask_secret: str) -> list[Path]:
+    changed: list[Path] = []
+    paths = [service_file]
+    dropin_dir = service_file.parent / f"{service_name}.service.d"
+    if dropin_dir.is_dir():
+        paths.extend(sorted(dropin_dir.glob("*.conf")))
+    for path in paths:
+        if path.name == "99-nexal-env.conf":
+            continue
+        if scrub_dev_flask_from_unit(path, dev_flask_secret):
+            changed.append(path)
+    return changed
+
+
+def ensure_dropin_env_file(
+    dropin_dir: Path,
+    dropin_file: Path,
+    env_file: Path,
+    values: dict[str, str],
+) -> None:
     dropin_dir.mkdir(parents=True, exist_ok=True)
+    flask = values["FLASK_SECRET_KEY"]
     dropin_file.write_text(
         "[Service]\n"
-        f"EnvironmentFile=-{env_file}\n",
+        f"EnvironmentFile=-{env_file}\n"
+        f"Environment=FLASK_SECRET_KEY={flask}\n"
+        f"Environment=SECRET_KEY={flask}\n"
+        "Environment=NEXAL_PRODUCTION=true\n",
         encoding="utf-8",
     )
 
@@ -274,11 +299,12 @@ def main() -> None:
 
     values = ensure_values(env_file, service_file, service, dev_flask_secret)
 
-    if service_file.is_file() and scrub_dev_flask_from_unit(service_file, dev_flask_secret):
-        print(f"Removed dev FLASK/SECRET defaults from {service_file}.")
+    changed = scrub_dev_flask_from_all_units(service_file, service, dev_flask_secret)
+    for path in changed:
+        print(f"Removed dev FLASK/SECRET defaults from {path}.")
 
-    ensure_dropin_env_file(dropin_dir, dropin_file, env_file)
-    print(f"Wrote systemd drop-in {dropin_file} (EnvironmentFile loads last).")
+    ensure_dropin_env_file(dropin_dir, dropin_file, env_file, values)
+    print(f"Wrote systemd drop-in {dropin_file} with production FLASK_SECRET_KEY.")
 
     validate_production_secrets(app_dir, env_file)
     run_health_checks(service, ledger_port, values["NEXAL_OPS_SECRET"], skip_service=args.skip_service)
