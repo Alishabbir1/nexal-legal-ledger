@@ -8,14 +8,17 @@ from typing import Tuple
 from flask import jsonify, request
 
 from nexal_platform.backup import BackupService
-from nexal_platform.ops_secret import OPS_SECRET_HEADER, get_expected_ops_secret
+from nexal_platform.ops_secret import (
+    get_expected_ops_secret,
+    get_provided_ops_secret,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _verify_ops_secret() -> Tuple[bool, str]:
     expected = get_expected_ops_secret()
-    provided = (request.headers.get(OPS_SECRET_HEADER) or "").strip().strip('"').strip("'")
+    provided = get_provided_ops_secret(request.headers)
 
     if not expected:
         return False, "server_secret_not_configured"

@@ -2,57 +2,52 @@
 import os
 import tempfile
 
-from nexal_platform.ops_secret import OPS_SECRET_HEADER, get_expected_ops_secret
+from nexal_platform.ops_secret import (
+    OPS_SECRET_ENV_KEY,
+    OPS_SECRET_HEADER,
+    bootstrap_ops_secret_env,
+    get_expected_ops_secret,
+    get_provided_ops_secret,
+    normalize_ops_secret,
+    validate_ops_secret_value,
+)
 
 
-def test_get_expected_ops_secret_from_env_file():
+def test_normalize_ops_secret_strips_quotes():
+    assert normalize_ops_secret('"abc123456789012"') == "abc123456789012"
+    assert normalize_ops_secret("'abc123456789012'") == "abc123456789012"
+
+
+def test_validate_ops_secret_value_rejects_placeholder():
+    assert validate_ops_secret_value("changeme") is not None
+    assert validate_ops_secret_value("replace-with-shared-secret") is not None
+    assert validate_ops_secret_value("valid-production-secret-value") is None
+
+
+def test_bootstrap_ops_secret_env_loads_from_env_file(monkeypatch):
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
-        handle.write('NEXAL_OPS_SECRET="abc123"\n')
+        handle.write('export NEXAL_OPS_SECRET="abc123456789012"\n')
         path = handle.name
 
     try:
-        os.environ["NEXAL_LEDGER_ENV_FILE"] = path
-        os.environ.pop("NEXAL_OPS_SECRET", None)
-        assert get_expected_ops_secret() == "abc123"
-    finally:
-        os.environ.pop("NEXAL_LEDGER_ENV_FILE", None)
-        os.remove(path)
-
-
-def test_get_expected_ops_secret_falls_back_to_env_file(monkeypatch):
-    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
-        handle.write("NEXAL_OPS_SECRET=file-secret\n")
-        path = handle.name
-
-    try:
-        monkeypatch.delenv("NEXAL_OPS_SECRET", raising=False)
-        monkeypatch.delenv("LEDGER_OPS_SECRET", raising=False)
-        monkeypatch.delenv("BACKUP_HEALTH_SECRET", raising=False)
+        monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
         monkeypatch.setenv("NEXAL_LEDGER_ENV_FILE", path)
-        assert get_expected_ops_secret() == "file-secret"
+        import nexal_platform.ops_secret as ops_secret_module
+
+        ops_secret_module._BOOTSTRAPPED = False
+        bootstrap_ops_secret_env()
+        assert os.environ[OPS_SECRET_ENV_KEY] == "abc123456789012"
+        assert get_expected_ops_secret() == "abc123456789012"
     finally:
         os.remove(path)
 
 
-def test_get_expected_ops_secret_reads_systemd_environment_file_directive(tmp_path, monkeypatch):
-    secret_file = tmp_path / "nexal.env"
-    secret_file.write_text("NEXAL_OPS_SECRET=systemd-file-secret\n", encoding="utf-8")
+def test_get_provided_ops_secret_normalizes_header():
+    class Headers:
+        def get(self, key, default=None):
+            return '"header-secret-value"' if key == OPS_SECRET_HEADER else default
 
-    monkeypatch.delenv("NEXAL_OPS_SECRET", raising=False)
-    monkeypatch.delenv("LEDGER_OPS_SECRET", raising=False)
-    monkeypatch.delenv("BACKUP_HEALTH_SECRET", raising=False)
-    monkeypatch.setenv("NEXAL_LEDGER_ENV_FILE", str(tmp_path / "missing.env"))
-
-    import nexal_platform.ops_secret as ops_secret_module
-
-    original = ops_secret_module._read_secret_from_service_files
-
-    def _stub_service_files():
-        return ops_secret_module._read_secret_from_env_file(str(secret_file))
-
-    monkeypatch.setattr(ops_secret_module, "_read_secret_from_service_files", _stub_service_files)
-
-    assert ops_secret_module.get_expected_ops_secret() == "systemd-file-secret"
+    assert get_provided_ops_secret(Headers()) == "header-secret-value"
 
 
 def test_ops_secret_header_name():

@@ -1,52 +1,95 @@
 """
 Authoritative Ledger resolution for the shared Portal ↔ Ledger ops API secret.
+Must stay in sync with lib/ops-secret.ts (normalization + validation).
 
-Portal equivalent: lib/ops-secret.ts
 Env var (both sides): NEXAL_OPS_SECRET
 Request header (Portal → Ledger): X-Nexal-Ops-Secret
 """
+from __future__ import annotations
+
 import os
-from typing import Optional, Tuple
+from typing import Iterable, Optional
 
-OPS_SECRET_ENV_KEYS: Tuple[str, ...] = (
-    "NEXAL_OPS_SECRET",
-    "LEDGER_OPS_SECRET",
-    "BACKUP_HEALTH_SECRET",
-)
-
+OPS_SECRET_ENV_KEY = "NEXAL_OPS_SECRET"
 OPS_SECRET_HEADER = "X-Nexal-Ops-Secret"
 
-DEFAULT_ENV_FILE_PATHS: Tuple[str, ...] = (
+DEFAULT_ENV_FILE_PATHS: tuple[str, ...] = (
     "/etc/nexal-ledger.env",
     "/etc/nexal/env",
     "/etc/nexal-ledger/env",
 )
 
+_PLACEHOLDER_VALUES = frozenset(
+    {
+        "replace-with-shared-secret-matching-ledger-nexal_ops_secret",
+        "replace-with-shared-secret",
+        "changeme",
+        "change-me",
+        "development",
+        "dev",
+        "test",
+        "placeholder",
+    }
+)
 
-def _clean_secret(value: str) -> str:
-    return value.strip().strip('"').strip("'").strip()
+_PLACEHOLDER_PREFIXES = (
+    "replace-with",
+    "change-me",
+    "your-",
+    "insert-",
+)
+
+_BOOTSTRAPPED = False
 
 
-def _read_secret_from_env_file(path: str) -> Optional[str]:
-    if not os.path.isfile(path):
+def normalize_ops_secret(value: Optional[str]) -> Optional[str]:
+    """Identical normalization to lib/ops-secret.ts normalizeOpsSecret."""
+    if value is None:
         return None
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, raw = line.split("=", 1)
-                if key.strip() in OPS_SECRET_ENV_KEYS:
-                    cleaned = _clean_secret(raw)
-                    if cleaned:
-                        return cleaned
-    except OSError:
-        return None
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "\"'":
+        cleaned = cleaned[1:-1].strip()
+    return cleaned or None
+
+
+def validate_ops_secret_value(value: Optional[str]) -> Optional[str]:
+    """Return an error message when invalid, otherwise None."""
+    normalized = normalize_ops_secret(value)
+    if not normalized:
+        return "NEXAL_OPS_SECRET is required and must not be blank."
+    if len(normalized) < 16:
+        return "NEXAL_OPS_SECRET must be at least 16 characters."
+    lowered = normalized.lower()
+    if lowered in _PLACEHOLDER_VALUES:
+        return "NEXAL_OPS_SECRET must not use a placeholder or development value."
+    if any(lowered.startswith(prefix) for prefix in _PLACEHOLDER_PREFIXES):
+        return "NEXAL_OPS_SECRET must not use a placeholder or development value."
     return None
 
 
-def _read_environment_file_paths_from_systemd() -> list[str]:
+def _parse_env_file(path: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not os.path.isfile(path):
+        return values
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                key, raw = line.split("=", 1)
+                key = key.strip()
+                cleaned = normalize_ops_secret(raw)
+                if cleaned:
+                    values[key] = cleaned
+    except OSError:
+        return values
+    return values
+
+
+def _systemd_environment_file_paths() -> list[str]:
     service_paths = [
         "/etc/systemd/system/nexal-ledger.service",
         "/etc/systemd/system/nexal-ledger.service.d/override.conf",
@@ -59,57 +102,67 @@ def _read_environment_file_paths_from_systemd() -> list[str]:
             with open(path, "r", encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
-                    if line.startswith("EnvironmentFile="):
-                        env_path = line.split("=", 1)[1].strip()
-                        if env_path.startswith("-"):
-                            env_path = env_path[1:].strip()
-                        env_path = env_path.strip('"').strip("'")
-                        if env_path:
-                            discovered.append(env_path)
-                    elif line.startswith("Environment=") and "NEXAL_OPS_SECRET=" in line:
-                        val = line.split("NEXAL_OPS_SECRET=", 1)[1]
-                        val = val.split()[0].strip('"').strip("'").strip()
-                        if val:
-                            return [f"__inline__:{val}"]
+                    if not line.startswith("EnvironmentFile="):
+                        continue
+                    env_path = line.split("=", 1)[1].strip()
+                    if env_path.startswith("-"):
+                        env_path = env_path[1:].strip()
+                    env_path = env_path.strip('"').strip("'")
+                    if env_path:
+                        discovered.append(env_path)
         except OSError:
             continue
     return discovered
 
 
-def _read_secret_from_service_files() -> Optional[str]:
-    for entry in _read_environment_file_paths_from_systemd():
-        if entry.startswith("__inline__:"):
-            return entry.split(":", 1)[1]
-        from_file = _read_secret_from_env_file(entry)
-        if from_file:
-            return from_file
-    return None
+def _candidate_env_file_paths() -> Iterable[str]:
+    seen: set[str] = set()
+
+    configured = os.environ.get("NEXAL_LEDGER_ENV_FILE", "").strip()
+    if configured:
+        seen.add(configured)
+        yield configured
+
+    for path in DEFAULT_ENV_FILE_PATHS:
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+    for path in _systemd_environment_file_paths():
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+
+def bootstrap_ops_secret_env() -> None:
+    """Ensure os.environ[NEXAL_OPS_SECRET] is populated from the production env file."""
+    global _BOOTSTRAPPED
+    if _BOOTSTRAPPED:
+        return
+    _BOOTSTRAPPED = True
+
+    current = normalize_ops_secret(os.environ.get(OPS_SECRET_ENV_KEY))
+    if current:
+        os.environ[OPS_SECRET_ENV_KEY] = current
+        return
+
+    for path in _candidate_env_file_paths():
+        values = _parse_env_file(path)
+        secret = normalize_ops_secret(values.get(OPS_SECRET_ENV_KEY))
+        if secret:
+            os.environ[OPS_SECRET_ENV_KEY] = secret
+            return
 
 
 def get_expected_ops_secret() -> str:
-    for key in OPS_SECRET_ENV_KEYS:
-        value = os.environ.get(key, "")
-        cleaned = _clean_secret(value)
-        if cleaned:
-            return cleaned
+    bootstrap_ops_secret_env()
+    return normalize_ops_secret(os.environ.get(OPS_SECRET_ENV_KEY)) or ""
 
-    configured_env_file = os.environ.get("NEXAL_LEDGER_ENV_FILE", "").strip()
-    env_file_candidates = []
-    if configured_env_file:
-        env_file_candidates.append(configured_env_file)
-    env_file_candidates.extend(DEFAULT_ENV_FILE_PATHS)
 
-    seen = set()
-    for path in env_file_candidates:
-        if path in seen:
-            continue
-        seen.add(path)
-        from_file = _read_secret_from_env_file(path)
-        if from_file:
-            return from_file
-
-    return _read_secret_from_service_files() or ""
+def get_provided_ops_secret(headers) -> str:
+    raw = headers.get(OPS_SECRET_HEADER) if headers is not None else None
+    return normalize_ops_secret(raw) or ""
 
 
 def is_ops_secret_configured() -> bool:
-    return bool(get_expected_ops_secret())
+    return validate_ops_secret_value(get_expected_ops_secret()) is None
