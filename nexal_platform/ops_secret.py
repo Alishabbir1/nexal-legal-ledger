@@ -7,7 +7,9 @@ Request header (Portal → Ledger): X-Nexal-Ops-Secret
 """
 from __future__ import annotations
 
+import glob
 import os
+import shlex
 from typing import Iterable, Optional
 
 OPS_SECRET_ENV_KEY = "NEXAL_OPS_SECRET"
@@ -17,6 +19,11 @@ DEFAULT_ENV_FILE_PATHS: tuple[str, ...] = (
     "/etc/nexal-ledger.env",
     "/etc/nexal/env",
     "/etc/nexal-ledger/env",
+)
+
+SYSTEMD_UNIT_PATHS: tuple[str, ...] = (
+    "/etc/systemd/system/nexal-ledger.service",
+    "/etc/systemd/system/nexal-ledger.service.d/override.conf",
 )
 
 _PLACEHOLDER_VALUES = frozenset(
@@ -38,8 +45,6 @@ _PLACEHOLDER_PREFIXES = (
     "your-",
     "insert-",
 )
-
-_BOOTSTRAPPED = False
 
 
 def normalize_ops_secret(value: Optional[str]) -> Optional[str]:
@@ -89,13 +94,43 @@ def _parse_env_file(path: str) -> dict[str, str]:
     return values
 
 
+def _parse_systemd_environment_assignment(raw: str) -> dict[str, str]:
+    """Parse a systemd Environment= value (may contain multiple KEY=VAL pairs)."""
+    values: dict[str, str] = {}
+    text = raw.strip()
+    if not text:
+        return values
+    try:
+        parts = shlex.split(text)
+    except ValueError:
+        parts = text.split()
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, raw_value = part.split("=", 1)
+        cleaned = normalize_ops_secret(raw_value)
+        if cleaned:
+            values[key.strip()] = cleaned
+    return values
+
+
+def _systemd_unit_paths() -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for path in SYSTEMD_UNIT_PATHS:
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    for path in sorted(glob.glob("/etc/systemd/system/nexal-ledger.service.d/*.conf")):
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
 def _systemd_environment_file_paths() -> list[str]:
-    service_paths = [
-        "/etc/systemd/system/nexal-ledger.service",
-        "/etc/systemd/system/nexal-ledger.service.d/override.conf",
-    ]
     discovered: list[str] = []
-    for path in service_paths:
+    for path in _systemd_unit_paths():
         if not os.path.isfile(path):
             continue
         try:
@@ -113,6 +148,28 @@ def _systemd_environment_file_paths() -> list[str]:
         except OSError:
             continue
     return discovered
+
+
+def _read_systemd_service_environment() -> dict[str, str]:
+    """Merge Environment= and EnvironmentFile= values from systemd unit files."""
+    merged: dict[str, str] = {}
+    for path in _systemd_unit_paths():
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line.startswith("Environment="):
+                        merged.update(
+                            _parse_systemd_environment_assignment(line.split("=", 1)[1])
+                        )
+        except OSError:
+            continue
+
+    for env_path in _systemd_environment_file_paths():
+        merged.update(_parse_env_file(env_path))
+    return merged
 
 
 def _candidate_env_file_paths() -> Iterable[str]:
@@ -134,28 +191,34 @@ def _candidate_env_file_paths() -> Iterable[str]:
             yield path
 
 
-def bootstrap_ops_secret_env() -> None:
-    """Ensure os.environ[NEXAL_OPS_SECRET] is populated from the production env file."""
-    global _BOOTSTRAPPED
-    if _BOOTSTRAPPED:
-        return
-    _BOOTSTRAPPED = True
-
+def _load_ops_secret_into_environ() -> None:
+    """Populate os.environ[NEXAL_OPS_SECRET] from process env, env files, or systemd units."""
     current = normalize_ops_secret(os.environ.get(OPS_SECRET_ENV_KEY))
     if current:
         os.environ[OPS_SECRET_ENV_KEY] = current
         return
 
     for path in _candidate_env_file_paths():
-        values = _parse_env_file(path)
-        secret = normalize_ops_secret(values.get(OPS_SECRET_ENV_KEY))
+        secret = normalize_ops_secret(_parse_env_file(path).get(OPS_SECRET_ENV_KEY))
         if secret:
             os.environ[OPS_SECRET_ENV_KEY] = secret
             return
 
+    secret = normalize_ops_secret(
+        _read_systemd_service_environment().get(OPS_SECRET_ENV_KEY)
+    )
+    if secret:
+        os.environ[OPS_SECRET_ENV_KEY] = secret
+
+
+def bootstrap_ops_secret_env() -> None:
+    """Ensure os.environ[NEXAL_OPS_SECRET] is populated at application startup."""
+    _load_ops_secret_into_environ()
+
 
 def get_expected_ops_secret() -> str:
-    bootstrap_ops_secret_env()
+    if not normalize_ops_secret(os.environ.get(OPS_SECRET_ENV_KEY)):
+        _load_ops_secret_into_environ()
     return normalize_ops_secret(os.environ.get(OPS_SECRET_ENV_KEY)) or ""
 
 

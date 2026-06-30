@@ -2,6 +2,8 @@
 import os
 import tempfile
 
+import pytest
+
 from nexal_platform.ops_secret import (
     OPS_SECRET_ENV_KEY,
     OPS_SECRET_HEADER,
@@ -11,6 +13,7 @@ from nexal_platform.ops_secret import (
     normalize_ops_secret,
     validate_ops_secret_value,
 )
+import nexal_platform.ops_secret as ops_secret_module
 
 
 def test_normalize_ops_secret_strips_quotes():
@@ -32,14 +35,58 @@ def test_bootstrap_ops_secret_env_loads_from_env_file(monkeypatch):
     try:
         monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
         monkeypatch.setenv("NEXAL_LEDGER_ENV_FILE", path)
-        import nexal_platform.ops_secret as ops_secret_module
-
-        ops_secret_module._BOOTSTRAPPED = False
         bootstrap_ops_secret_env()
         assert os.environ[OPS_SECRET_ENV_KEY] == "abc123456789012"
         assert get_expected_ops_secret() == "abc123456789012"
     finally:
         os.remove(path)
+
+
+def test_loads_ops_secret_from_systemd_environment_directive(monkeypatch, tmp_path):
+    """Production VPS often sets Environment=NEXAL_OPS_SECRET=... inline in the unit file."""
+    service_file = tmp_path / "nexal-ledger.service"
+    service_file.write_text(
+        "[Service]\nEnvironment=NEXAL_OPS_SECRET=techstacbackup2026\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
+    monkeypatch.setattr(ops_secret_module, "DEFAULT_ENV_FILE_PATHS", ())
+    monkeypatch.setattr(ops_secret_module, "SYSTEMD_UNIT_PATHS", (str(service_file),))
+
+    bootstrap_ops_secret_env()
+    assert os.environ[OPS_SECRET_ENV_KEY] == "techstacbackup2026"
+    assert get_expected_ops_secret() == "techstacbackup2026"
+
+
+def test_loads_ops_secret_from_quoted_systemd_environment(monkeypatch, tmp_path):
+    service_file = tmp_path / "nexal-ledger.service"
+    service_file.write_text(
+        '[Service]\nEnvironment="NEXAL_OPS_SECRET=techstacbackup2026"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
+    monkeypatch.setattr(ops_secret_module, "DEFAULT_ENV_FILE_PATHS", ())
+    monkeypatch.setattr(ops_secret_module, "SYSTEMD_UNIT_PATHS", (str(service_file),))
+
+    assert get_expected_ops_secret() == "techstacbackup2026"
+
+
+def test_get_expected_ops_secret_retries_when_env_empty_after_first_import(monkeypatch, tmp_path):
+    """Simulate gunicorn import before env is visible: second call must still resolve."""
+    service_file = tmp_path / "nexal-ledger.service"
+    service_file.write_text(
+        "[Service]\nEnvironment=NEXAL_OPS_SECRET=techstacbackup2026\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
+    monkeypatch.setattr(ops_secret_module, "DEFAULT_ENV_FILE_PATHS", ())
+    monkeypatch.setattr(ops_secret_module, "SYSTEMD_UNIT_PATHS", (str(service_file),))
+
+    assert get_expected_ops_secret() == "techstacbackup2026"
+    assert get_expected_ops_secret() == "techstacbackup2026"
 
 
 def test_get_provided_ops_secret_normalizes_header():
@@ -52,3 +99,30 @@ def test_get_provided_ops_secret_normalizes_header():
 
 def test_ops_secret_header_name():
     assert OPS_SECRET_HEADER == "X-Nexal-Ops-Secret"
+
+
+def test_backup_health_api_with_systemd_resolved_secret(monkeypatch, tmp_path):
+    """End-to-end: secret only in systemd unit file, not in os.environ at import."""
+    service_file = tmp_path / "nexal-ledger.service"
+    secret = "techstacbackup2026"
+    service_file.write_text(
+        f"[Service]\nEnvironment=NEXAL_OPS_SECRET={secret}\n",
+        encoding="utf-8",
+    )
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setenv("NEXAL_DATA_DIR", str(data_root))
+    monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
+    monkeypatch.setattr(ops_secret_module, "DEFAULT_ENV_FILE_PATHS", ())
+    monkeypatch.setattr(ops_secret_module, "SYSTEMD_UNIT_PATHS", (str(service_file),))
+
+    import app as ledger_app
+
+    client = ledger_app.app.test_client()
+    response = client.get(
+        "/api/ops/backup-health",
+        headers={"X-Nexal-Ops-Secret": secret},
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["system"] == "ledger"
