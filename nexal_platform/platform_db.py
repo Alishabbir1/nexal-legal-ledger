@@ -252,6 +252,38 @@ class PlatformDatabase:
             conn.close()
         return self.get_firm(firm_id)
 
+    def update_firm_status_by_portal_firm_id(
+        self,
+        portal_firm_id: str,
+        status: str,
+    ) -> Dict[str, Any]:
+        """Sync Portal account lifecycle status to platform firm + workspace."""
+        allowed = {"active", "suspended", "archived"}
+        normalized = (status or "").strip().lower()
+        if normalized not in allowed:
+            raise ValueError("Invalid ledger firm status.")
+
+        firm = self.get_firm_by_portal_firm_id(portal_firm_id)
+        if firm is None:
+            raise KeyError(f"Firm not found for portal firm id: {portal_firm_id}")
+
+        workspace_status = "active" if normalized == "active" else "suspended"
+        now = _utc_now()
+        conn = self.get_connection()
+        try:
+            conn.execute(
+                "UPDATE firms SET status = ?, updated_at = ? WHERE id = ?",
+                (normalized, now, firm["id"]),
+            )
+            conn.execute(
+                "UPDATE workspaces SET status = ?, updated_at = ? WHERE firm_id = ?",
+                (workspace_status, now, firm["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_firm(firm["id"])
+
     def get_firm(self, firm_id: str) -> Dict[str, Any]:
         conn = self.get_connection()
         try:

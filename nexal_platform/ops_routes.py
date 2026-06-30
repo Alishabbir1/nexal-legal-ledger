@@ -59,3 +59,32 @@ def register_ops_routes(app):
                 "recent_audit": summary.get("recent_audit", [])[:20],
             }
         ), 200
+
+    @app.route("/api/ops/firm-account-status", methods=["POST"])
+    def api_ops_firm_account_status():
+        ok, reason = _verify_ops_secret()
+        if not ok:
+            logger.warning("Ops firm account status unauthorized: %s", reason)
+            return jsonify({"error": "Unauthorized"}), 401
+
+        payload = request.get_json(silent=True) or {}
+        portal_firm_id = str(payload.get("portal_firm_id") or "").strip()
+        ledger_status = str(payload.get("ledger_status") or "").strip().lower()
+
+        if not portal_firm_id or not ledger_status:
+            return jsonify({"error": "Invalid request."}), 400
+
+        from nexal_platform.platform_db import PlatformDatabase
+
+        try:
+            PlatformDatabase().update_firm_status_by_portal_firm_id(
+                portal_firm_id,
+                ledger_status,
+            )
+        except KeyError:
+            logger.warning("Ops firm account status: unknown portal firm %s", portal_firm_id)
+            return jsonify({"error": "Not found."}), 404
+        except ValueError:
+            return jsonify({"error": "Invalid request."}), 400
+
+        return jsonify({"ok": True}), 200

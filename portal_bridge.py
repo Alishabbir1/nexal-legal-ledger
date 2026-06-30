@@ -305,6 +305,10 @@ def ensure_portal_user_in_ledger(payload: Dict[str, Any], platform_firm_id: str)
 
 def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Validate firm, resolve user, and populate Flask session."""
+    account_status = str(jwt_payload.get("account_status") or "ACTIVE").strip().upper()
+    if account_status != "ACTIVE":
+        raise ValueError("Firm account is not active for ledger access.")
+
     from lib.firm_package import cache_tier_in_tenant_db, resolve_firm_tier
     from lib.sso_trace import log_sso_detail, sso_stage
     from nexal_platform.config import get_runtime_data_root, repair_all_stale_workspace_paths
