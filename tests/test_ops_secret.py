@@ -7,6 +7,7 @@ import pytest
 from nexal_platform.ops_secret import (
     OPS_SECRET_ENV_KEY,
     OPS_SECRET_HEADER,
+    bootstrap_ledger_env,
     bootstrap_ops_secret_env,
     get_expected_ops_secret,
     get_provided_ops_secret,
@@ -38,6 +39,55 @@ def test_bootstrap_ops_secret_env_loads_from_env_file(monkeypatch):
         bootstrap_ops_secret_env()
         assert os.environ[OPS_SECRET_ENV_KEY] == "abc123456789012"
         assert get_expected_ops_secret() == "abc123456789012"
+    finally:
+        os.remove(path)
+
+
+def test_bootstrap_ledger_env_loads_flask_secret_from_env_file(monkeypatch):
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
+        handle.write(
+            "NEXAL_OPS_SECRET=valid-production-secret-value\n"
+            "FLASK_SECRET_KEY=unique-flask-secret-for-production\n"
+            "SSO_SECRET_KEY=unique-sso-secret-for-production\n"
+        )
+        path = handle.name
+
+    try:
+        monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
+        monkeypatch.delenv("FLASK_SECRET_KEY", raising=False)
+        monkeypatch.delenv("SSO_SECRET_KEY", raising=False)
+        monkeypatch.setenv("NEXAL_LEDGER_ENV_FILE", path)
+        bootstrap_ledger_env()
+        assert os.environ["FLASK_SECRET_KEY"] == "unique-flask-secret-for-production"
+        assert os.environ["SECRET_KEY"] == "unique-flask-secret-for-production"
+        assert os.environ["SSO_SECRET_KEY"] == "unique-sso-secret-for-production"
+    finally:
+        os.remove(path)
+
+
+def test_bootstrap_ledger_env_passes_production_validation(monkeypatch):
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
+        handle.write(
+            "NEXAL_OPS_SECRET=valid-production-secret-value\n"
+            "FLASK_SECRET_KEY=unique-flask-secret-for-production\n"
+            "SSO_SECRET_KEY=unique-sso-secret-for-production\n"
+        )
+        path = handle.name
+
+    try:
+        from nexal_platform.production_secrets import validate_production_secrets
+
+        monkeypatch.setenv("NEXAL_PRODUCTION", "true")
+        monkeypatch.delenv(OPS_SECRET_ENV_KEY, raising=False)
+        monkeypatch.delenv("FLASK_SECRET_KEY", raising=False)
+        monkeypatch.delenv("SSO_SECRET_KEY", raising=False)
+        monkeypatch.setenv("NEXAL_LEDGER_ENV_FILE", path)
+        bootstrap_ledger_env()
+        validate_production_secrets(
+            sso_secret=os.environ.get("SSO_SECRET_KEY"),
+            flask_secret=os.environ.get("FLASK_SECRET_KEY"),
+            ops_secret=os.environ.get(OPS_SECRET_ENV_KEY),
+        )
     finally:
         os.remove(path)
 

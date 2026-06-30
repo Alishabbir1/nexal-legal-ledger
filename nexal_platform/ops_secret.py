@@ -15,6 +15,13 @@ from typing import Iterable, Optional
 OPS_SECRET_ENV_KEY = "NEXAL_OPS_SECRET"
 OPS_SECRET_HEADER = "X-Nexal-Ops-Secret"
 
+LEDGER_BOOTSTRAP_ENV_KEYS: tuple[str, ...] = (
+    OPS_SECRET_ENV_KEY,
+    "FLASK_SECRET_KEY",
+    "SSO_SECRET_KEY",
+    "NEXAL_SSO_SECRET",
+)
+
 DEFAULT_ENV_FILE_PATHS: tuple[str, ...] = (
     "/etc/nexal-ledger.env",
     "/etc/nexal/env",
@@ -191,29 +198,42 @@ def _candidate_env_file_paths() -> Iterable[str]:
             yield path
 
 
-def _load_ops_secret_into_environ() -> None:
-    """Populate os.environ[NEXAL_OPS_SECRET] from process env, env files, or systemd units."""
-    current = normalize_ops_secret(os.environ.get(OPS_SECRET_ENV_KEY))
+def _load_env_var_into_environ(key: str) -> None:
+    """Populate os.environ[key] from process env, env files, or systemd units."""
+    current = normalize_ops_secret(os.environ.get(key))
     if current:
-        os.environ[OPS_SECRET_ENV_KEY] = current
+        os.environ[key] = current
         return
 
     for path in _candidate_env_file_paths():
-        secret = normalize_ops_secret(_parse_env_file(path).get(OPS_SECRET_ENV_KEY))
-        if secret:
-            os.environ[OPS_SECRET_ENV_KEY] = secret
+        value = normalize_ops_secret(_parse_env_file(path).get(key))
+        if value:
+            os.environ[key] = value
             return
 
-    secret = normalize_ops_secret(
-        _read_systemd_service_environment().get(OPS_SECRET_ENV_KEY)
-    )
-    if secret:
-        os.environ[OPS_SECRET_ENV_KEY] = secret
+    value = normalize_ops_secret(_read_systemd_service_environment().get(key))
+    if value:
+        os.environ[key] = value
+
+
+def _load_ops_secret_into_environ() -> None:
+    """Populate os.environ[NEXAL_OPS_SECRET] from process env, env files, or systemd units."""
+    _load_env_var_into_environ(OPS_SECRET_ENV_KEY)
+
+
+def bootstrap_ledger_env() -> None:
+    """Ensure production env vars are populated at application startup."""
+    for key in LEDGER_BOOTSTRAP_ENV_KEYS:
+        _load_env_var_into_environ(key)
+
+    flask_secret = normalize_ops_secret(os.environ.get("FLASK_SECRET_KEY"))
+    if flask_secret and not normalize_ops_secret(os.environ.get("SECRET_KEY")):
+        os.environ["SECRET_KEY"] = flask_secret
 
 
 def bootstrap_ops_secret_env() -> None:
     """Ensure os.environ[NEXAL_OPS_SECRET] is populated at application startup."""
-    _load_ops_secret_into_environ()
+    bootstrap_ledger_env()
 
 
 def get_expected_ops_secret() -> str:
