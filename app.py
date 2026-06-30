@@ -86,15 +86,11 @@ _static_dir = os.path.join(_bundle_dir, 'static')
 _app = Flask(__name__, template_folder=_template_dir, static_folder=_static_dir)
 
 from nexal_platform.production_secrets import DEV_FLASK_SECRET, validate_production_secrets
-from nexal_platform.ops_secret import bootstrap_ledger_env, get_expected_ops_secret
+from nexal_platform.ops_secret import bootstrap_ledger_env, get_expected_ops_secret, get_flask_secret
 
 bootstrap_ledger_env()
 
-_flask_secret = (
-    os.environ.get("FLASK_SECRET_KEY")
-    or os.environ.get("SECRET_KEY")
-    or DEV_FLASK_SECRET
-)
+_flask_secret = get_flask_secret() or DEV_FLASK_SECRET
 validate_production_secrets(
     sso_secret=os.environ.get("SSO_SECRET_KEY") or os.environ.get("NEXAL_SSO_SECRET"),
     flask_secret=_flask_secret,

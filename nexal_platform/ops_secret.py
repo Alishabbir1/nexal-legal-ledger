@@ -22,6 +22,8 @@ LEDGER_BOOTSTRAP_ENV_KEYS: tuple[str, ...] = (
     "NEXAL_SSO_SECRET",
 )
 
+DEV_FLASK_SECRET = "sra-compliant-secret-key-change-in-production"
+
 DEFAULT_ENV_FILE_PATHS: tuple[str, ...] = (
     "/etc/nexal-ledger.env",
     "/etc/nexal/env",
@@ -198,6 +200,42 @@ def _candidate_env_file_paths() -> Iterable[str]:
             yield path
 
 
+def is_usable_flask_secret(value: Optional[str]) -> bool:
+    cleaned = normalize_ops_secret(value)
+    if not cleaned or len(cleaned) < 16:
+        return False
+    return cleaned != DEV_FLASK_SECRET
+
+
+def _load_flask_secret_into_environ() -> None:
+    """Load FLASK_SECRET_KEY; env file wins over inline systemd dev defaults."""
+    for path in _candidate_env_file_paths():
+        value = normalize_ops_secret(_parse_env_file(path).get("FLASK_SECRET_KEY"))
+        if is_usable_flask_secret(value):
+            os.environ["FLASK_SECRET_KEY"] = value  # type: ignore[assignment]
+            if not is_usable_flask_secret(os.environ.get("SECRET_KEY")):
+                os.environ["SECRET_KEY"] = value
+            return
+
+    for key in ("FLASK_SECRET_KEY", "SECRET_KEY"):
+        value = normalize_ops_secret(_read_systemd_service_environment().get(key))
+        if is_usable_flask_secret(value):
+            os.environ["FLASK_SECRET_KEY"] = value  # type: ignore[assignment]
+            os.environ["SECRET_KEY"] = value
+            return
+
+    for key in ("FLASK_SECRET_KEY", "SECRET_KEY"):
+        value = normalize_ops_secret(os.environ.get(key))
+        if is_usable_flask_secret(value):
+            os.environ["FLASK_SECRET_KEY"] = value
+            os.environ["SECRET_KEY"] = value
+            return
+
+    os.environ.pop("FLASK_SECRET_KEY", None)
+    if not is_usable_flask_secret(os.environ.get("SECRET_KEY")):
+        os.environ.pop("SECRET_KEY", None)
+
+
 def _load_env_var_into_environ(key: str) -> None:
     """Populate os.environ[key] from process env, env files, or systemd units."""
     current = normalize_ops_secret(os.environ.get(key))
@@ -223,12 +261,20 @@ def _load_ops_secret_into_environ() -> None:
 
 def bootstrap_ledger_env() -> None:
     """Ensure production env vars are populated at application startup."""
+    _load_flask_secret_into_environ()
     for key in LEDGER_BOOTSTRAP_ENV_KEYS:
+        if key == "FLASK_SECRET_KEY":
+            continue
         _load_env_var_into_environ(key)
 
-    flask_secret = normalize_ops_secret(os.environ.get("FLASK_SECRET_KEY"))
-    if flask_secret and not normalize_ops_secret(os.environ.get("SECRET_KEY")):
-        os.environ["SECRET_KEY"] = flask_secret
+
+def get_flask_secret() -> str:
+    """Resolved Flask session secret after bootstrap (empty when unset/invalid)."""
+    bootstrap_ledger_env()
+    value = normalize_ops_secret(os.environ.get("FLASK_SECRET_KEY")) or normalize_ops_secret(
+        os.environ.get("SECRET_KEY")
+    )
+    return value or ""
 
 
 def bootstrap_ops_secret_env() -> None:

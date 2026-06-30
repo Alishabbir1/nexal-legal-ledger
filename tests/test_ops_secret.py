@@ -5,12 +5,15 @@ import tempfile
 import pytest
 
 from nexal_platform.ops_secret import (
+    DEV_FLASK_SECRET,
     OPS_SECRET_ENV_KEY,
     OPS_SECRET_HEADER,
     bootstrap_ledger_env,
     bootstrap_ops_secret_env,
     get_expected_ops_secret,
+    get_flask_secret,
     get_provided_ops_secret,
+    is_usable_flask_secret,
     normalize_ops_secret,
     validate_ops_secret_value,
 )
@@ -26,6 +29,35 @@ def test_validate_ops_secret_value_rejects_placeholder():
     assert validate_ops_secret_value("changeme") is not None
     assert validate_ops_secret_value("replace-with-shared-secret") is not None
     assert validate_ops_secret_value("valid-production-secret-value") is None
+
+
+def test_is_usable_flask_secret_rejects_dev_default():
+    assert is_usable_flask_secret(DEV_FLASK_SECRET) is False
+    assert is_usable_flask_secret("unique-flask-secret-for-production") is True
+
+
+def test_bootstrap_prefers_env_file_flask_secret_over_systemd_dev_default(monkeypatch, tmp_path):
+    env_file = tmp_path / "ledger.env"
+    env_file.write_text(
+        "NEXAL_OPS_SECRET=valid-production-secret-value\n"
+        "FLASK_SECRET_KEY=unique-flask-secret-for-production\n"
+        "SSO_SECRET_KEY=unique-sso-secret-for-production\n",
+        encoding="utf-8",
+    )
+    service_file = tmp_path / "nexal-ledger.service"
+    service_file.write_text(
+        f"[Service]\nEnvironment=FLASK_SECRET_KEY={DEV_FLASK_SECRET}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("NEXAL_LEDGER_ENV_FILE", str(env_file))
+    monkeypatch.setenv("FLASK_SECRET_KEY", DEV_FLASK_SECRET)
+    monkeypatch.setattr(ops_secret_module, "DEFAULT_ENV_FILE_PATHS", ())
+    monkeypatch.setattr(ops_secret_module, "SYSTEMD_UNIT_PATHS", (str(service_file),))
+
+    bootstrap_ledger_env()
+    assert get_flask_secret() == "unique-flask-secret-for-production"
+    assert os.environ["FLASK_SECRET_KEY"] == "unique-flask-secret-for-production"
 
 
 def test_bootstrap_ops_secret_env_loads_from_env_file(monkeypatch):

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Configure production secrets on the Ledger VPS (ops, Flask session, SSO sync).
-# Run on the VPS as root. Requires openssl.
+# Run on the VPS as root. Requires openssl and python3.
 set -euo pipefail
 
 ENV_FILE="${NEXAL_LEDGER_ENV_FILE:-/etc/nexal-ledger.env}"
 SERVICE="${SERVICE:-nexal-ledger}"
 SERVICE_FILE="/etc/systemd/system/${SERVICE}.service"
+DROPIN_DIR="/etc/systemd/system/${SERVICE}.service.d"
+DROPIN_FILE="${DROPIN_DIR}/99-nexal-env.conf"
 LEDGER_PORT="${LEDGER_PORT:-5001}"
 APP_DIR="${APP_DIR:-/opt/nexal-ledger}"
 DEV_FLASK_SECRET="sra-compliant-secret-key-change-in-production"
@@ -19,178 +21,252 @@ mkdir -p "$(dirname "${ENV_FILE}")"
 touch "${ENV_FILE}"
 chmod 600 "${ENV_FILE}"
 
-grep -q '^NEXAL_PRODUCTION=' "${ENV_FILE}" || echo 'NEXAL_PRODUCTION=true' >> "${ENV_FILE}"
+export ENV_FILE SERVICE_FILE DROPIN_DIR DROPIN_FILE DEV_FLASK_SECRET APP_DIR SERVICE LEDGER_PORT
 
-read_env_file_var() {
-  grep -E "^${1}=" "${ENV_FILE}" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true
-}
+python3 <<'PY'
+from __future__ import annotations
 
-read_systemd_var() {
-  local key="$1"
-  if [[ ! -f "${SERVICE_FILE}" ]]; then
-    return 0
-  fi
-  grep -E "^Environment=.*${key}=" "${SERVICE_FILE}" 2>/dev/null | tail -n1 | sed -n "s/.*${key}=\([^\"' ]*\).*/\1/p" || true
-}
-
-write_env_var() {
-  local key="$1"
-  local val="$2"
-  if grep -q "^${key}=" "${ENV_FILE}"; then
-    sed -i "s|^${key}=.*|${key}=${val}|" "${ENV_FILE}"
-  else
-    echo "${key}=${val}" >> "${ENV_FILE}"
-  fi
-}
-
-is_valid_secret() {
-  local value="$1"
-  local min_len="${2:-16}"
-  [[ -n "${value}" && "${#value}" -ge "${min_len}" ]]
-}
-
-ensure_ops_secret() {
-  local secret existing
-  existing="$(read_env_file_var NEXAL_OPS_SECRET)"
-
-  if is_valid_secret "${existing}" 16; then
-    secret="${existing}"
-    echo "Using existing NEXAL_OPS_SECRET from ${ENV_FILE}."
-  else
-    if [[ -n "${NEXAL_OPS_SECRET:-}" && "${#NEXAL_OPS_SECRET}" -ge 16 ]]; then
-      secret="${NEXAL_OPS_SECRET}"
-      echo "Using NEXAL_OPS_SECRET from environment."
-    else
-      secret="$(openssl rand -hex 32)"
-      echo "Generated new NEXAL_OPS_SECRET."
-    fi
-    write_env_var NEXAL_OPS_SECRET "${secret}"
-  fi
-
-  if [[ -f "${SERVICE_FILE}" ]] && ! grep -q '^EnvironmentFile=' "${SERVICE_FILE}"; then
-    sed -i "/^\[Service\]/a EnvironmentFile=-${ENV_FILE}" "${SERVICE_FILE}"
-    echo "Added EnvironmentFile=-${ENV_FILE} to ${SERVICE_FILE}."
-  fi
-
-  if [[ -f "${SERVICE_FILE}" ]]; then
-    local inline_secret
-    inline_secret="$(read_systemd_var NEXAL_OPS_SECRET)"
-    if is_valid_secret "${inline_secret}" 16 && ! is_valid_secret "$(read_env_file_var NEXAL_OPS_SECRET)" 16; then
-      write_env_var NEXAL_OPS_SECRET "${inline_secret}"
-      secret="${inline_secret}"
-      echo "Synced NEXAL_OPS_SECRET from systemd Environment= into ${ENV_FILE}."
-    fi
-  fi
-
-  echo "${secret}"
-}
-
-ensure_flask_secret_key() {
-  local existing systemd_val
-  existing="$(read_env_file_var FLASK_SECRET_KEY)"
-
-  if is_valid_secret "${existing}" 16 && [[ "${existing}" != "${DEV_FLASK_SECRET}" ]]; then
-    echo "Using existing FLASK_SECRET_KEY from ${ENV_FILE}."
-    return 0
-  fi
-
-  systemd_val="$(read_systemd_var FLASK_SECRET_KEY)"
-  if is_valid_secret "${systemd_val}" 16 && [[ "${systemd_val}" != "${DEV_FLASK_SECRET}" ]]; then
-    write_env_var FLASK_SECRET_KEY "${systemd_val}"
-    echo "Synced FLASK_SECRET_KEY from systemd Environment= into ${ENV_FILE}."
-    return 0
-  fi
-
-  systemd_val="$(read_systemd_var SECRET_KEY)"
-  if is_valid_secret "${systemd_val}" 16 && [[ "${systemd_val}" != "${DEV_FLASK_SECRET}" ]]; then
-    write_env_var FLASK_SECRET_KEY "${systemd_val}"
-    echo "Synced SECRET_KEY from systemd into FLASK_SECRET_KEY in ${ENV_FILE}."
-    return 0
-  fi
-
-  write_env_var FLASK_SECRET_KEY "$(openssl rand -hex 32)"
-  echo "Generated new FLASK_SECRET_KEY in ${ENV_FILE}."
-}
-
-ensure_sso_secret_key() {
-  local existing systemd_val
-  existing="$(read_env_file_var SSO_SECRET_KEY)"
-
-  if is_valid_secret "${existing}" 16; then
-    echo "Using existing SSO_SECRET_KEY from ${ENV_FILE}."
-    return 0
-  fi
-
-  systemd_val="$(read_systemd_var SSO_SECRET_KEY)"
-  if is_valid_secret "${systemd_val}" 16; then
-    write_env_var SSO_SECRET_KEY "${systemd_val}"
-    echo "Synced SSO_SECRET_KEY from systemd Environment= into ${ENV_FILE}."
-    return 0
-  fi
-
-  systemd_val="$(read_systemd_var NEXAL_SSO_SECRET)"
-  if is_valid_secret "${systemd_val}" 16; then
-    write_env_var SSO_SECRET_KEY "${systemd_val}"
-    echo "Synced NEXAL_SSO_SECRET from systemd into SSO_SECRET_KEY in ${ENV_FILE}."
-    return 0
-  fi
-
-  echo "ERROR: SSO_SECRET_KEY is missing from ${ENV_FILE} and systemd." >&2
-  echo "Set SSO_SECRET_KEY in ${ENV_FILE} to match Portal LEDGER_SSO_SECRET, then re-run." >&2
-  exit 1
-}
-
-validate_production_secrets_python() {
-  if [[ ! -d "${APP_DIR}" ]]; then
-    echo "Skipping Python validation (APP_DIR ${APP_DIR} not found)."
-    return 0
-  fi
-
-  NEXAL_LEDGER_ENV_FILE="${ENV_FILE}" APP_DIR="${APP_DIR}" python3 <<'PY'
 import os
+import re
+import secrets
+import shlex
+import subprocess
 import sys
+from pathlib import Path
 
-app_dir = os.environ["APP_DIR"]
-sys.path.insert(0, app_dir)
-os.environ.setdefault("NEXAL_PRODUCTION", "true")
+ENV_FILE = Path(os.environ["ENV_FILE"])
+SERVICE_FILE = Path(os.environ["SERVICE_FILE"])
+DROPIN_DIR = Path(os.environ["DROPIN_DIR"])
+DROPIN_FILE = Path(os.environ["DROPIN_FILE"])
+DEV_FLASK_SECRET = os.environ["DEV_FLASK_SECRET"]
+APP_DIR = Path(os.environ["APP_DIR"])
+SERVICE = os.environ["SERVICE"]
+LEDGER_PORT = os.environ["LEDGER_PORT"]
+MIN_SECRET_LEN = 16
 
-from nexal_platform.ops_secret import bootstrap_ledger_env, get_expected_ops_secret
-from nexal_platform.production_secrets import validate_production_secrets
 
-bootstrap_ledger_env()
-validate_production_secrets(
-    sso_secret=os.environ.get("SSO_SECRET_KEY") or os.environ.get("NEXAL_SSO_SECRET"),
-    flask_secret=os.environ.get("FLASK_SECRET_KEY") or os.environ.get("SECRET_KEY"),
-    ops_secret=get_expected_ops_secret() or None,
+def parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        value = value.strip().strip('"').strip("'")
+        if value:
+            values[key.strip()] = value
+    return values
+
+
+def write_env_file(values: dict[str, str]) -> None:
+    lines: list[str] = []
+    for key in sorted(values.keys()):
+        lines.append(f"{key}={values[key]}")
+    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(ENV_FILE, 0o600)
+
+
+def is_valid_secret(value: str | None, *, min_len: int = MIN_SECRET_LEN) -> bool:
+    return bool(value and len(value) >= min_len)
+
+
+def is_usable_flask_secret(value: str | None) -> bool:
+    return is_valid_secret(value) and value != DEV_FLASK_SECRET
+
+
+def parse_systemd_environment(line: str) -> dict[str, str]:
+    raw = line.split("=", 1)[1].strip()
+    values: dict[str, str] = {}
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        parts = raw.split()
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if value:
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def read_systemd_environment() -> dict[str, str]:
+    merged: dict[str, str] = {}
+    paths = [SERVICE_FILE]
+    if SERVICE_FILE.parent.is_dir():
+        paths.extend(sorted(SERVICE_FILE.parent.glob(f"{SERVICE.name}.service.d/*.conf")))
+    for path in paths:
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("Environment="):
+                merged.update(parse_systemd_environment(line))
+    return merged
+
+
+def scrub_dev_flask_from_unit(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    original = path.read_text(encoding="utf-8")
+    updated = original
+    for key in ("FLASK_SECRET_KEY", "SECRET_KEY"):
+        updated = re.sub(
+            rf'(\s|^){re.escape(key)}={re.escape(DEV_FLASK_SECRET)}(\s|$)',
+            " ",
+            updated,
+        )
+        updated = re.sub(rf'{re.escape(key)}={re.escape(DEV_FLASK_SECRET)}\s*', "", updated)
+    updated = re.sub(r"Environment=\s+", "Environment=", updated)
+    updated = re.sub(r"Environment=\s*$", "", updated, flags=re.MULTILINE)
+    if updated != original:
+        path.write_text(updated, encoding="utf-8")
+        return True
+    return False
+
+
+def ensure_dropin_env_file() -> None:
+    DROPIN_DIR.mkdir(parents=True, exist_ok=True)
+    DROPIN_FILE.write_text(
+        "[Service]\n"
+        f"EnvironmentFile=-{ENV_FILE}\n",
+        encoding="utf-8",
+    )
+
+
+def ensure_values() -> dict[str, str]:
+    values = parse_env_file(ENV_FILE)
+    values.setdefault("NEXAL_PRODUCTION", "true")
+    systemd_env = read_systemd_environment()
+
+    ops = values.get("NEXAL_OPS_SECRET") or systemd_env.get("NEXAL_OPS_SECRET") or os.environ.get("NEXAL_OPS_SECRET")
+    if not is_valid_secret(ops):
+        ops = secrets.token_hex(32)
+        print("Generated new NEXAL_OPS_SECRET.")
+    else:
+        print("Using existing NEXAL_OPS_SECRET.")
+    values["NEXAL_OPS_SECRET"] = ops
+
+    flask = values.get("FLASK_SECRET_KEY")
+    if not is_usable_flask_secret(flask):
+        flask = systemd_env.get("FLASK_SECRET_KEY")
+    if not is_usable_flask_secret(flask):
+        flask = systemd_env.get("SECRET_KEY")
+    if not is_usable_flask_secret(flask):
+        flask = secrets.token_hex(32)
+        print("Generated new FLASK_SECRET_KEY.")
+    else:
+        print("Using existing FLASK_SECRET_KEY.")
+    values["FLASK_SECRET_KEY"] = flask
+
+    sso = values.get("SSO_SECRET_KEY")
+    if not is_valid_secret(sso):
+        sso = systemd_env.get("SSO_SECRET_KEY") or systemd_env.get("NEXAL_SSO_SECRET")
+    if not is_valid_secret(sso):
+        print(
+            f"ERROR: SSO_SECRET_KEY is missing from {ENV_FILE} and systemd.\n"
+            f"Set SSO_SECRET_KEY in {ENV_FILE} to match Portal LEDGER_SSO_SECRET, then re-run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print("Using existing SSO_SECRET_KEY.")
+    values["SSO_SECRET_KEY"] = sso
+
+    write_env_file(values)
+
+    for required in ("NEXAL_PRODUCTION", "NEXAL_OPS_SECRET", "FLASK_SECRET_KEY", "SSO_SECRET_KEY"):
+        if required not in parse_env_file(ENV_FILE):
+            print(f"FATAL: {required} missing from {ENV_FILE} after write.", file=sys.stderr)
+            sys.exit(1)
+
+    return values
+
+
+def validate_production_secrets() -> None:
+    if not APP_DIR.is_dir():
+        print(f"Skipping Python validation (APP_DIR {APP_DIR} not found).")
+        return
+    env = os.environ.copy()
+    env["NEXAL_LEDGER_ENV_FILE"] = str(ENV_FILE)
+    env.setdefault("NEXAL_PRODUCTION", "true")
+    env["PYTHONPATH"] = str(APP_DIR)
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; "
+                "from nexal_platform.ops_secret import bootstrap_ledger_env, get_expected_ops_secret, get_flask_secret; "
+                "from nexal_platform.production_secrets import validate_production_secrets; "
+                "bootstrap_ledger_env(); "
+                "validate_production_secrets("
+                "sso_secret=os.environ.get('SSO_SECRET_KEY') or os.environ.get('NEXAL_SSO_SECRET'), "
+                "flask_secret=get_flask_secret() or None, "
+                "ops_secret=get_expected_ops_secret() or None); "
+                "print('Production secret validation passed.')"
+            ),
+        ],
+        check=True,
+        env=env,
+        cwd=str(APP_DIR),
+    )
+
+
+values = ensure_values()
+
+if SERVICE_FILE.is_file() and scrub_dev_flask_from_unit(SERVICE_FILE):
+    print(f"Removed dev FLASK/SECRET defaults from {SERVICE_FILE}.")
+
+ensure_dropin_env_file()
+print(f"Wrote systemd drop-in {DROPIN_FILE} (EnvironmentFile loads last).")
+
+validate_production_secrets()
+
+subprocess.run(["systemctl", "daemon-reload"], check=True)
+subprocess.run(["systemctl", "restart", SERVICE], check=True)
+subprocess.run(["systemctl", "is-active", "--quiet", SERVICE], check=True)
+
+ops_secret = values["NEXAL_OPS_SECRET"]
+root = subprocess.run(
+    ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10", f"http://127.0.0.1:{LEDGER_PORT}/"],
+    capture_output=True,
+    text=True,
 )
-print("Production secret validation passed.")
+health = subprocess.run(
+    [
+        "curl",
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "--max-time",
+        "10",
+        "-H",
+        f"X-Nexal-Ops-Secret: {ops_secret}",
+        f"http://127.0.0.1:{LEDGER_PORT}/api/ops/backup-health",
+    ],
+    capture_output=True,
+    text=True,
+)
+
+print("")
+print("Ledger service restarted.")
+print(f"Local root HTTP status: {root.stdout.strip() or 'unavailable'}")
+print(f"Local backup-health HTTP status: {health.stdout.strip() or 'unavailable'}")
+print("")
+print("Set the SAME value on Vercel (Portal production):")
+print(f"  NEXAL_OPS_SECRET={ops_secret}")
+print("")
+
+if health.stdout.strip() != "200":
+    print(
+        f"WARNING: Local backup-health did not return HTTP 200. Check: journalctl -u {SERVICE} -n 50 --no-pager",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 PY
-}
-
-ops_secret="$(ensure_ops_secret)"
-ensure_flask_secret_key
-ensure_sso_secret_key
-validate_production_secrets_python
-
-systemctl daemon-reload
-systemctl restart "${SERVICE}"
-systemctl is-active --quiet "${SERVICE}"
-
-root_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:${LEDGER_PORT}/" || true)"
-health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-  -H "X-Nexal-Ops-Secret: ${ops_secret}" \
-  "http://127.0.0.1:${LEDGER_PORT}/api/ops/backup-health" || true)"
-
-echo ""
-echo "Ledger service restarted."
-echo "Local root HTTP status: ${root_code:-unavailable}"
-echo "Local backup-health HTTP status: ${health_code:-unavailable}"
-echo ""
-echo "Set the SAME value on Vercel (Portal production):"
-echo "  NEXAL_OPS_SECRET=${ops_secret}"
-echo ""
-
-if [[ "${health_code}" != "200" ]]; then
-  echo "WARNING: Local backup-health did not return HTTP 200. Check: journalctl -u ${SERVICE} -n 50 --no-pager" >&2
-  exit 1
-fi
