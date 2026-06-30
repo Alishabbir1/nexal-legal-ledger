@@ -2,7 +2,7 @@
 Phase 4B — link portal firms to ledger platform tenants.
 """
 import logging
-import os
+import osh
 import re
 import shutil
 import sqlite3
@@ -108,7 +108,7 @@ def ensure_firm_tenant_ready(
         paths,
     )
     db_path = require_safe_tenant_db_path(db_path, context="ensure_firm_tenant_ready")
-    if not _tenant_database_is_valid(db_path):
+    if not os.path.isfile(db_path) or os.path.getsize(db_path) < 512:
         logger.warning(
             "Repairing invalid tenant database for portal firm %s at %s",
             firm.get("portal_firm_id"),
