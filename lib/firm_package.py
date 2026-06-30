@@ -37,8 +37,12 @@ def resolve_firm_tier(session: Dict[str, Any], db) -> str:
     """
     Resolve tier for the active request.
 
-    Prefer platform registry when SSO firm_id is present; fall back to tenant cache.
+    Read tenant cache first for fast page navigation. Platform registry is consulted
+    only when cache is empty (SSO and portal sync populate the cache).
     """
+    cached = db.get_config(FIRM_SUBSCRIPTION_CONFIG_KEY)
+    if cached:
+        return normalize_tier(cached)
     firm_id = session.get("firm_id")
     if firm_id:
         try:
@@ -47,8 +51,7 @@ def resolve_firm_tier(session: Dict[str, Any], db) -> str:
             return tier
         except KeyError:
             pass
-    cached = db.get_config(FIRM_SUBSCRIPTION_CONFIG_KEY)
-    return normalize_tier(cached or DEFAULT_TIER)
+    return normalize_tier(DEFAULT_TIER)
 
 
 def resolve_package_display_for_request(session: Dict[str, Any], db) -> str:
