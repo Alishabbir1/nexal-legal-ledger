@@ -592,6 +592,8 @@ class Database:
         Ensure users table has all security/recovery columns. Run at app startup.
         Safely adds missing columns without removing any data.
         """
+        if getattr(self, "_security_columns_initialized", False):
+            return
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
@@ -631,6 +633,7 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+        self._security_columns_initialized = True
 
     def _seed_default_users(self, cursor):
         cursor.execute("SELECT value FROM system_config WHERE key = 'provisioned_tenant'")

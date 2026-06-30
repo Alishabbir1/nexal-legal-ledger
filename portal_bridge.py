@@ -311,26 +311,10 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
 
     from lib.firm_package import cache_tier_in_tenant_db, resolve_firm_tier
     from lib.sso_trace import log_sso_detail, sso_stage
-    from nexal_platform.config import get_runtime_data_root, repair_all_stale_workspace_paths
+    from nexal_platform.config import get_runtime_data_root
 
     email = jwt_payload.get("email")
     portal_firm_id = str(jwt_payload["firm_id"])
-
-    # Repair stale workspace paths before any tenant filesystem access (SSO hot path).
-    platform_for_repair = PlatformDatabase()
-    repaired = repair_all_stale_workspace_paths(platform_for_repair)
-    if repaired:
-        logger.warning(
-            "Repaired %d stale workspace database_path(s) during SSO for %s",
-            repaired,
-            email,
-        )
-        # Invalidate the global TenantRouter cache so repaired paths take effect
-        # immediately.  Without this, any Database object created before the repair
-        # (pointing at a forbidden path) would continue to be used for the rest of
-        # this process lifetime.
-        from db_router import clear_router_cache
-        clear_router_cache()
 
     log_sso_detail(
         email,
@@ -338,7 +322,6 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
         portal_firm_id=portal_firm_id,
         portal_user_id=jwt_payload.get("sub"),
         data_root=get_runtime_data_root(),
-        workspace_paths_repaired=repaired,
     )
 
     platform_firm = sso_stage(

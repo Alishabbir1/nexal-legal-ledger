@@ -1,10 +1,12 @@
 """
 Platform registry database — firms, workspaces, and user linkage.
 """
+import os
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from nexal_platform.config import PlatformPaths, get_platform_paths
 
@@ -13,12 +15,39 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_schema_lock = threading.Lock()
+_schema_ready_roots: Set[str] = set()
+_repair_done_roots: Set[str] = set()
+
+
+def reset_platform_schema_cache_for_tests() -> None:
+    """Clear per-process platform init cache (tests only)."""
+    with _schema_lock:
+        _schema_ready_roots.clear()
+        _repair_done_roots.clear()
+
+
 class PlatformDatabase:
     """Manages platform.db metadata for multi-tenant Nexal Legal."""
 
     def __init__(self, paths: Optional[PlatformPaths] = None):
         self.paths = paths or get_platform_paths()
-        self.init_schema()
+        self._ensure_schema_ready()
+
+    def _ensure_schema_ready(self) -> None:
+        root = os.path.abspath(self.paths.root)
+        if root in _schema_ready_roots:
+            return
+        with _schema_lock:
+            if root in _schema_ready_roots:
+                return
+            self.init_schema()
+            if root not in _repair_done_roots:
+                from nexal_platform.config import repair_all_stale_workspace_paths
+
+                repair_all_stale_workspace_paths(self)
+                _repair_done_roots.add(root)
+            _schema_ready_roots.add(root)
 
     def get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.paths.platform_db, timeout=30, check_same_thread=False)
@@ -95,10 +124,6 @@ class PlatformDatabase:
             conn.commit()
         finally:
             conn.close()
-
-        from nexal_platform.config import repair_all_stale_workspace_paths
-
-        repair_all_stale_workspace_paths(self)
 
     def _migrate_schema(self, cursor: sqlite3.Cursor) -> None:
         """Apply incremental schema migrations without destructive changes."""
