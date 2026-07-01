@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
-# One-time Serene Solicitors production migration on the Ledger VPS.
+# One-time Serene Solicitors production migration — run this single script on the VPS.
 set -euo pipefail
 
 LEGACY_PATH="${1:-/tmp/serene_solicitor_ledger.db}"
-REPO="${NEXAL_LEDGER_REPO:-/opt/nexal-legal-ledger}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DATA_DIR="${NEXAL_DATA_DIR:-/var/lib/nexal-legal}"
 
 if [[ ! -f "${LEGACY_PATH}" ]]; then
-  echo "Legacy database not found: ${LEGACY_PATH}" >&2
-  echo "Upload desktop DB first, e.g. scp %LOCALAPPDATA%\\SolicitorLedger\\solicitor_ledger.db root@VPS:${LEGACY_PATH}" >&2
+  echo "ERROR: Legacy database not found: ${LEGACY_PATH}" >&2
   exit 1
 fi
 
-cd "${REPO}"
+cd "${APP_DIR}"
+echo "== Updating ledger code =="
+git pull --ff-only
+
 export NEXAL_DATA_DIR="${DATA_DIR}"
 
 echo "== Dry run validation =="
 python3 scripts/migrate_serene_production.py --legacy-path "${LEGACY_PATH}" --dry-run
 
-echo "== Applying migration =="
+echo "== Applying migration (backup blank tenant, import legacy data, validate) =="
 python3 scripts/migrate_serene_production.py --legacy-path "${LEGACY_PATH}" --apply
 
 echo "== Restarting ledger service =="
-systemctl restart nexal-ledger || service nexal-ledger restart
+systemctl restart nexal-ledger
 
-echo "Serene production migration complete. Launch Application from the Portal to verify."
+echo ""
+echo "SUCCESS: Serene Solicitors production migration complete."
+echo "Portal firm: 0343a4a2-5c8e-45ac-a506-61d2dde6fdb3"
+echo "Expected: 42 clients | cashbook £36,214.51 | April locked reconciliation"
+echo "Log into Portal as Smalik34@hotmail.co.uk and Launch Application to verify."
