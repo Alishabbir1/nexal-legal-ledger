@@ -20,7 +20,12 @@ from typing import Any, Dict, List, Optional
 
 from database import Database
 from lib.firm_package import cache_tier_in_tenant_db
-from nexal_platform.config import get_platform_paths, require_safe_tenant_db_path
+from nexal_platform.config import (
+    get_platform_paths,
+    repair_all_stale_workspace_paths,
+    require_safe_tenant_db_path,
+    resolve_workspace_database_path,
+)
 from nexal_platform.platform_db import PlatformDatabase
 
 
@@ -357,9 +362,18 @@ def migrate_legacy_into_existing_tenant(
     platform = PlatformDatabase(paths)
     firm = _resolve_existing_portal_firm(platform, portal_firm_id)
     platform_firm_id = firm["id"]
+    repair_all_stale_workspace_paths(platform)
     workspace = platform.get_workspace_for_firm(platform_firm_id)
-    tenant_path = require_safe_tenant_db_path(
+    tenant_path = paths.tenant_db_path(platform_firm_id)
+    resolve_workspace_database_path(
+        platform,
+        platform_firm_id,
         workspace["database_path"],
+        paths,
+    )
+    platform.update_workspace_database_path(platform_firm_id, tenant_path)
+    tenant_path = require_safe_tenant_db_path(
+        tenant_path,
         context="migrate_legacy_into_existing_tenant",
     )
 
@@ -412,7 +426,7 @@ def migrate_legacy_into_existing_tenant(
         status="dry_run" if dry_run else "migrated",
         portal_firm_id=portal_firm_id,
         platform_firm_id=platform_firm_id,
-        tenant_database_path=workspace["database_path"],
+        tenant_database_path=tenant_path,
         legacy_path=legacy_path,
         backup_path=backup_path,
         before_tenant_snapshot=before_snapshot,

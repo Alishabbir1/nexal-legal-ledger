@@ -25,6 +25,9 @@ python3 scripts/migrate_serene_production.py --legacy-path "${LEGACY_PATH}" --dr
 echo "== Applying migration (backup blank tenant, import legacy data, validate) =="
 python3 scripts/migrate_serene_production.py --legacy-path "${LEGACY_PATH}" --apply
 
+echo "== Repairing tenant path for SSO =="
+python3 scripts/repair_serene_sso.py
+
 echo "== Restarting ledger service =="
 systemctl restart nexal-ledger
 
