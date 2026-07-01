@@ -1,6 +1,7 @@
 """
 Database routing — resolve firm to isolated SQLite ledger database.
 """
+import os
 from typing import Any, Dict, Optional, Tuple
 
 from database import Database
@@ -38,11 +39,20 @@ class TenantRouter:
         """
         if firm_id in self._cache:
             cached_db = self._cache[firm_id]
-            if is_forbidden_runtime_path(getattr(cached_db, 'db_path', None)):
-                # Stale cache entry with forbidden path — evict and re-resolve.
+            cached_path = getattr(cached_db, "db_path", None)
+            if is_forbidden_runtime_path(cached_path):
                 del self._cache[firm_id]
             else:
-                return cached_db
+                try:
+                    current_path = self.resolve_database_path(firm_id)
+                except Exception:
+                    current_path = None
+                if current_path and cached_path and os.path.normpath(cached_path) != os.path.normpath(
+                    current_path
+                ):
+                    del self._cache[firm_id]
+                else:
+                    return cached_db
 
         db_path = self.resolve_database_path(firm_id)
         db = Database(db_path=db_path)

@@ -592,7 +592,11 @@ class Database:
         Ensure users table has all security/recovery columns. Run at app startup.
         Safely adds missing columns without removing any data.
         """
-        if getattr(self, "_security_columns_initialized", False):
+        db_mtime = os.path.getmtime(self.db_path) if os.path.isfile(self.db_path) else 0
+        if (
+            getattr(self, "_security_columns_initialized", False)
+            and getattr(self, "_security_columns_mtime", None) == db_mtime
+        ):
             return
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -634,6 +638,7 @@ class Database:
         finally:
             conn.close()
         self._security_columns_initialized = True
+        self._security_columns_mtime = db_mtime
 
     def _seed_default_users(self, cursor):
         cursor.execute("SELECT value FROM system_config WHERE key = 'provisioned_tenant'")
@@ -1179,6 +1184,7 @@ class Database:
         return (msg, False, None)
 
     def reset_recovery_confirm_attempts(self, user_id: int):
+        self.initialize_security_columns()
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("""

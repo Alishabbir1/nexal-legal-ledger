@@ -108,6 +108,16 @@ def ensure_firm_tenant_ready(
         paths,
     )
     db_path = require_safe_tenant_db_path(db_path, context="ensure_firm_tenant_ready")
+
+    from nexal_platform.migration.tenant_db_relocate import (
+        repair_firm_tenant_database_path,
+        tenant_client_count,
+    )
+
+    if tenant_client_count(db_path) < 1:
+        db_path = repair_firm_tenant_database_path(platform, firm_id, min_clients=1)
+        db_path = require_safe_tenant_db_path(db_path, context="ensure_firm_tenant_ready")
+
     if not os.path.isfile(db_path) or os.path.getsize(db_path) < 512:
         logger.warning(
             "Repairing invalid tenant database for portal firm %s at %s",
