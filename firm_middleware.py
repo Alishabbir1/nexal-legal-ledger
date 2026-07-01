@@ -2,6 +2,7 @@
 firm_middleware.py - Phase 4B: Flask SSO routes and firm-aware helpers.
 """
 import logging
+import os
 import sqlite3
 from functools import wraps
 from typing import Any, Dict, Tuple
@@ -65,7 +66,19 @@ def _handle_sso_exception(exc: Exception):
             return _sso_browser_error_response(exc)
         return _sso_error_response(exc)
     if isinstance(exc, sqlite3.Error):
-        logger.exception("SSO database error")
+        db_hint = ""
+        try:
+            from flask import session as flask_session
+
+            firm_id = flask_session.get("firm_id")
+            if firm_id:
+                from db_router import get_router
+
+                db_path = get_router().resolve_database_path(firm_id)
+                db_hint = f" db_path={db_path} writable={os.access(db_path, os.W_OK)}"
+        except Exception:
+            pass
+        logger.exception("SSO database error%s", db_hint)
         return jsonify(
             {
                 "error": "Ledger database error during sign-in. Please contact support.",

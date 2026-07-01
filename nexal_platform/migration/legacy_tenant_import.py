@@ -403,6 +403,9 @@ def migrate_legacy_into_existing_tenant(
                 email=owner_email,
                 portal_user_id=portal_user_id,
             )
+        from nexal_platform.migration.tenant_permissions import repair_runtime_data_ownership
+
+        repair_runtime_data_ownership(paths)
     else:
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             staging_path = tmp.name

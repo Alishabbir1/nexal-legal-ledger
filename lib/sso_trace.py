@@ -8,7 +8,13 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-TRACE_EMAILS = frozenset({"sunthessmunir@gmail.com"})
+TRACE_EMAILS = frozenset(
+    {
+        "sunthessmunir@gmail.com",
+        "Smalik34@hotmail.co.uk",
+        "smalik34@hotmail.co.uk",
+    }
+)
 
 
 def should_trace(email: str | None) -> bool:

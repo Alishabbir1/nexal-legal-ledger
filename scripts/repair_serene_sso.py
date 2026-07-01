@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 from _bootstrap import bootstrap_repo_root
@@ -31,6 +32,10 @@ from nexal_platform.migration.tenant_db_relocate import (
     repair_firm_tenant_database_path,
     tenant_client_count,
 )
+from nexal_platform.migration.tenant_permissions import (
+    repair_runtime_data_ownership,
+    resolve_ledger_service_user,
+)
 from nexal_platform.platform_db import PlatformDatabase
 from sso_auth import generate_sso_token
 
@@ -41,8 +46,18 @@ SERENE_PORTAL_CUSTOMER_ID = "0ef7eaf6-8825-49c9-901f-e727ea85c1a5"
 EXPECTED_CLIENTS = 42
 
 
-def _simulate_sso(platform_firm_id: str) -> dict:
-    token = generate_sso_token(
+def _portal_like_sso_token() -> str:
+    """Match Portal launch JWT claims (firm_users.id, customer id, password hash)."""
+    try:
+        import bcrypt
+
+        password_hash = bcrypt.hashpw(b"PortalLaunchTest!", bcrypt.gensalt(12)).decode()
+    except ImportError:
+        from werkzeug.security import generate_password_hash
+
+        password_hash = generate_password_hash("PortalLaunchTest!", method="scrypt")
+
+    return generate_sso_token(
         user_id=SERENE_PORTAL_USER_ID,
         email=SERENE_OWNER_EMAIL,
         firm_id=SERENE_PORTAL_FIRM_ID,
@@ -52,14 +67,48 @@ def _simulate_sso(platform_firm_id: str) -> dict:
             "firm_name": "Serene Solicitors Limited",
             "subscription_tier": "essential",
             "portal_customer_id": SERENE_PORTAL_CUSTOMER_ID,
+            "password_hash": password_hash,
+            "first_name": "Serene",
+            "last_name": "Admin",
+            "max_users": 2,
+            "account_status": "ACTIVE",
         },
     )
+
+
+def _tenant_db_writable_by_service_user(db_path: str, service_user: str) -> bool:
+    if not os.path.isfile(db_path):
+        return False
+    if hasattr(os, "geteuid") and os.geteuid() == 0 and service_user:
+        probe = (
+            "import os, sys;"
+            f"sys.exit(0 if os.access({db_path!r}, os.W_OK) else 1)"
+        )
+        try:
+            result = subprocess.run(
+                ["sudo", "-u", service_user, "python3", "-c", probe],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result.returncode == 0
+        except OSError:
+            pass
+    return os.access(db_path, os.W_OK)
+
+
+def _simulate_sso(platform_firm_id: str, *, use_post: bool = True) -> dict:
+    token = _portal_like_sso_token()
     from app import app
 
     client = app.test_client()
-    response = client.get("/auth/sso?token=" + token)
+    if use_post:
+        response = client.post("/auth/sso", data={"token": token})
+    else:
+        response = client.get("/auth/sso?token=" + token)
     body = response.get_data(as_text=True)
     result = {
+        "method": "POST" if use_post else "GET",
         "status": response.status_code,
         "location": response.headers.get("Location"),
         "body_preview": body[:500],
@@ -116,7 +165,19 @@ def main() -> int:
     )
     db_path = ensure_tenant_ready_for_sso(platform, firm_id, min_clients=args.min_clients)
     workspace_after = platform.get_workspace_for_firm(firm_id)
+    ownership = repair_runtime_data_ownership(paths)
+    service_user = ownership.get("service_user") or resolve_ledger_service_user()
     snap = snapshot_tenant(db_path)
+
+    db_stat = os.stat(db_path) if os.path.isfile(db_path) else None
+    db_owner = None
+    if db_stat is not None and hasattr(os, "getuid"):
+        import pwd
+
+        try:
+            db_owner = pwd.getpwuid(db_stat.st_uid).pw_name
+        except KeyError:
+            db_owner = str(db_stat.st_uid)
 
     report = {
         "data_root": paths.root,
@@ -125,6 +186,12 @@ def main() -> int:
         "workspace_before": workspace_before.get("database_path"),
         "workspace_after": workspace_after.get("database_path"),
         "tenant_database_path": db_path,
+        "tenant_db_owner": db_owner,
+        "service_user": service_user,
+        "tenant_db_writable_by_service_user": _tenant_db_writable_by_service_user(
+            db_path, service_user
+        ),
+        "ownership_repair": ownership,
         "client_count": tenant_client_count(db_path),
         "expected_clients": args.min_clients,
         "cashbook_balance": str(snap.cashbook_balance),
@@ -142,11 +209,16 @@ def main() -> int:
         errors.append(
             f"Cashbook balance {snap.cashbook_balance} != expected {EXPECTED_APRIL_CASHBOOK}"
         )
+    if not report["tenant_db_writable_by_service_user"]:
+        errors.append(
+            f"Tenant database is not writable by service user {service_user} "
+            f"(owner={db_owner}) — SSO will return SSO_DB_ERROR under Gunicorn"
+        )
 
     if not args.skip_sso_simulation:
-        report["sso_simulation"] = _simulate_sso(firm_id)
+        report["sso_simulation"] = _simulate_sso(firm_id, use_post=True)
         if not report["sso_simulation"]["success"]:
-            errors.append("SSO simulation failed — see sso_simulation in report")
+            errors.append("SSO POST simulation failed — see sso_simulation in report")
 
     report["repair_passed"] = len(errors) == 0
     report["errors"] = errors
