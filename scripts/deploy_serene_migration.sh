@@ -14,7 +14,8 @@ fi
 
 cd "${APP_DIR}"
 echo "== Updating ledger code =="
-git pull --ff-only
+git fetch origin main
+git reset --hard origin/main
 
 export NEXAL_DATA_DIR="${DATA_DIR}"
 
