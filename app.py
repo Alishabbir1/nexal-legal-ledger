@@ -2104,7 +2104,7 @@ def build_pdf_report(title, subtitle, headers, rows, col_widths, currency_cols=N
 
     elements = []
     elements.append(Paragraph("Nexal Legal", styles['Heading2']))
-    elements.append(Paragraph("Nexal Solutions", styles['Normal']))
+    elements.append(Paragraph("Nexal Solutions Ltd", styles['Normal']))
     elements.append(Paragraph(title, styles['Title']))
     elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
     if subtitle:

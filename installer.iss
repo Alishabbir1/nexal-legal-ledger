@@ -4,7 +4,7 @@
 
 #define MyAppName "Nexal Legal"
 #define MyAppVersion "1.0"
-#define MyAppPublisher "Nexal Solutions"
+#define MyAppPublisher "Nexal Solutions Ltd"
 #define MyAppURL "https://example.com"
 #define MyAppExeName "NexalLegal.exe"
 
