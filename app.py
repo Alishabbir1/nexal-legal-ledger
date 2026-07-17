@@ -340,11 +340,14 @@ def require_login():
 
 @app.context_processor
 def inject_user():
+    from lib.branding import LEGAL_COMPANY_NAME, PRODUCT_NAME
     from lib.firm_package import package_usage_summary, resolve_package_display_for_request
 
     ctx = {
         'current_username': session.get('username'),
         'current_role': session.get('role'),
+        'legal_company_name': LEGAL_COMPANY_NAME,
+        'product_name': PRODUCT_NAME,
         'dashboard_alerts': get_dashboard_alerts(session, db),
         'override_mode_active': session.get('override_mode', False),
         'override_mode_reason': session.get('override_reason', ''),
@@ -2102,9 +2105,11 @@ def build_pdf_report(title, subtitle, headers, rows, col_widths, currency_cols=N
     cell_style.fontSize = 8
     cell_style.leading = 10
 
+    from lib.branding import LEGAL_COMPANY_NAME, PRODUCT_NAME
+
     elements = []
-    elements.append(Paragraph("Nexal Legal", styles['Heading2']))
-    elements.append(Paragraph("Nexal Solutions", styles['Normal']))
+    elements.append(Paragraph(PRODUCT_NAME, styles['Heading2']))
+    elements.append(Paragraph(LEGAL_COMPANY_NAME, styles['Normal']))
     elements.append(Paragraph(title, styles['Title']))
     elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
     if subtitle:
