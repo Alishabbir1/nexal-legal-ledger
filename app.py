@@ -1344,6 +1344,22 @@ def office_import_statement():
                 else:
                     balance_match = 'mismatch'
 
+        # For the very first import, add a "Balance Brought Forward" Receipt so the
+        # DB running balance reflects the true account balance and future continuity
+        # checks compare correctly.  Only added when opening_balance > 0.
+        if balance_match == 'first_import' and opening_balance and opening_balance > Decimal('0'):
+            bf_date = stmt_start or (rows[0]['date'] if rows else datetime.now().strftime('%Y-%m-%d'))
+            rows.insert(0, {
+                'date': bf_date,
+                'description': 'Balance Brought Forward',
+                'reference': 'Opening Balance',
+                'amount': opening_balance,
+                'transaction_type': 'Receipt',
+                'balance': opening_balance,
+                'row_number': 0,
+                'is_balance_brought_forward': True,
+            })
+
         # Duplicate detection
         rows = _flag_import_duplicates(rows)
 
