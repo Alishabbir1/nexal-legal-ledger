@@ -238,6 +238,284 @@ def test_cancel_import_deletes_staging(client):
     assert rows2 == []
 
 
+# ---------------------------------------------------------------------------
+# Workflow correctness: the review screen is a staging-only preview.
+# Nothing is committed until the user explicitly clicks "Approve Import".
+# ---------------------------------------------------------------------------
+
+WORKFLOW_CSV = (
+    b"Date,Description,Money Out,Money In,Balance\r\n"
+    b"2025-01-01,Opening Balance,,,25000.00\r\n"
+    b"2025-01-10,Client Fee,,9525.00,34525.00\r\n"
+    b"2025-01-15,Office Expenses,5400.00,,29125.00\r\n"
+)
+
+
+def _upload_workflow_csv(client):
+    """Upload WORKFLOW_CSV and return batch_id."""
+    resp = client.post(
+        '/office-account/import-statement',
+        data={
+            'statement_file': (io.BytesIO(WORKFLOW_CSV), 'jan.csv'),
+            'statement_start': '2025-01-01',
+            'statement_end': '2025-01-31',
+        },
+        content_type='multipart/form-data',
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302, f"Expected redirect after upload, got {resp.status_code}"
+    batch_id = resp.headers.get('Location', '').split('batch=')[-1]
+    assert batch_id, "No batch_id in redirect"
+    return batch_id
+
+
+def _audit_count():
+    """Count Office Account audit_log entries in the current DB."""
+    conn = app_module.db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE module='Office Account'"
+        ).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
+
+def test_upload_without_approve_leaves_office_account_unchanged(client):
+    """
+    Test 1: Upload CSV, do NOT approve.
+    The Office Account must remain completely unchanged:
+      - office_cashbook: no new rows
+      - totals: £0.00 / £0.00 / £0.00
+      - statement history: empty
+    The staging batch exists (preview only) but the live account is untouched.
+    """
+    cashbook_before = len(app_module.db.get_office_transactions() or [])
+    history_before = _audit_count()
+
+    batch_id = _upload_workflow_csv(client)
+
+    # Staging should exist (preview)
+    rows, meta = app_module.db.get_office_import_staging(batch_id)
+    assert rows, "Staging rows must exist after upload"
+
+    # office_cashbook must not have grown
+    cashbook_after = len(app_module.db.get_office_transactions() or [])
+    assert cashbook_after == cashbook_before, (
+        f"office_cashbook grew during upload (before={cashbook_before}, after={cashbook_after}). "
+        f"Transactions must not be created until Approve is clicked."
+    )
+
+    # Statement history must not have grown
+    assert app_module.db.get_previous_statement_closing('2025-02-01') is None, (
+        "Statement history must not be recorded until Approve is clicked."
+    )
+
+    # No audit entries should have been written during upload
+    assert _audit_count() == history_before, (
+        "No audit_log entries should be written during upload (before approval)."
+    )
+
+    # Office Account page must show zero totals
+    resp = client.get('/office-account')
+    html = resp.get_data(as_text=True)
+    import re
+    amounts = re.findall(r'£[\d,]+\.\d{2}', html)
+    non_zero = [a for a in amounts if a != '£0.00']
+    assert not non_zero, (
+        f"Office Account page must show only £0.00 values before approval. "
+        f"Found non-zero amounts: {non_zero}"
+    )
+
+
+def test_cancel_leaves_zero_traces(client):
+    """
+    Test 2: Upload CSV then Cancel.
+    Cancel must leave ZERO traces:
+      - staging: deleted
+      - office_cashbook: unchanged
+      - office_statement_history: unchanged
+      - audit_log: NO new entries (not even a cancel entry)
+      - Office Account page: same state as before upload
+    """
+    cashbook_before = len(app_module.db.get_office_transactions() or [])
+    audit_before = _audit_count()
+    balance_before = app_module.db.get_office_balance()
+
+    batch_id = _upload_workflow_csv(client)
+
+    # Cancel
+    resp = client.post(
+        '/office-account/import-cancel',
+        data={'batch_id': batch_id},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+
+    # Staging must be gone
+    rows, _ = app_module.db.get_office_import_staging(batch_id)
+    assert rows == [], "Staging must be deleted after cancel"
+
+    # office_cashbook must be unchanged
+    cashbook_after = len(app_module.db.get_office_transactions() or [])
+    assert cashbook_after == cashbook_before, (
+        f"office_cashbook changed after cancel (before={cashbook_before}, after={cashbook_after})"
+    )
+
+    # Balance unchanged
+    assert app_module.db.get_office_balance() == balance_before, (
+        "Office Account balance must not change after cancel"
+    )
+
+    # Statement history must be empty (no entry recorded before approval)
+    assert app_module.db.get_previous_statement_closing('2025-02-01') is None, (
+        "Statement history must not be created after cancel"
+    )
+
+    # Audit log must not have grown (cancel leaves zero traces)
+    audit_after = _audit_count()
+    assert audit_after == audit_before, (
+        f"Cancel must write NO audit entries (before={audit_before}, after={audit_after}). "
+        f"Cancel must leave zero traces."
+    )
+
+    # Office Account page must still show zeros
+    resp2 = client.get('/office-account')
+    html = resp2.get_data(as_text=True)
+    import re
+    amounts = re.findall(r'£[\d,]+\.\d{2}', html)
+    non_zero = [a for a in amounts if a != '£0.00']
+    assert not non_zero, (
+        f"Office Account page must show only £0.00 after cancel. Non-zero: {non_zero}"
+    )
+
+
+def test_approve_is_the_single_commit_point(client):
+    """
+    Test 3: Upload CSV then Approve.
+    Only after Approve should:
+      - transactions appear in office_cashbook
+      - Office Account totals change
+      - Statement history be recorded
+      - An audit entry be written
+    """
+    cashbook_before = len(app_module.db.get_office_transactions() or [])
+    audit_before = _audit_count()
+
+    batch_id = _upload_workflow_csv(client)
+
+    # Confirm still clean before approval
+    assert len(app_module.db.get_office_transactions() or []) == cashbook_before
+    assert _audit_count() == audit_before
+
+    # Approve
+    rows, _ = app_module.db.get_office_import_staging(batch_id)
+    form = {'batch_id': batch_id, 'confirm_balance_mismatch': 'confirmed'}
+    for row in rows:
+        form[f'keep_{row["id"]}'] = 'on'
+        form[f'ref_{row["id"]}'] = 'Import'
+        form[f'source_{row["id"]}'] = 'Bank Transfer'
+    resp = client.post('/office-account/import-approve', data=form, follow_redirects=True)
+    assert resp.status_code == 200
+
+    # Transactions must now exist
+    cashbook_after = len(app_module.db.get_office_transactions() or [])
+    assert cashbook_after > cashbook_before, (
+        "Transactions must be created after Approve"
+    )
+
+    # Statement history must be recorded
+    assert app_module.db.get_previous_statement_closing('2025-02-01') is not None, (
+        "Statement history must be recorded after Approve"
+    )
+
+    # Audit entry must have been written
+    assert _audit_count() > audit_before, (
+        "An audit entry must be written after Approve"
+    )
+
+    # Office Account page must show non-zero totals
+    resp2 = client.get('/office-account')
+    html = resp2.get_data(as_text=True)
+    assert '£0.00' not in html or html.count('£0.00') < 3, (
+        "After approval, Office Account totals must be non-zero"
+    )
+
+
+def test_cancel_after_first_import_leaves_january_intact(client):
+    """
+    Test 4: Approve January, then upload February and Cancel.
+    January data must remain completely intact.
+    No February data must exist anywhere after cancel.
+    """
+    # Approve January
+    batch_jan = _upload_workflow_csv(client)
+    rows_j, _ = app_module.db.get_office_import_staging(batch_jan)
+    form_j = {'batch_id': batch_jan, 'confirm_balance_mismatch': 'confirmed'}
+    for row in rows_j:
+        form_j[f'keep_{row["id"]}'] = 'on'
+        form_j[f'ref_{row["id"]}'] = 'Import'
+        form_j[f'source_{row["id"]}'] = 'Bank Transfer'
+    client.post('/office-account/import-approve', data=form_j, follow_redirects=True)
+
+    # Snapshot state after January approval
+    jan_cashbook_count = len(app_module.db.get_office_transactions() or [])
+    jan_balance = app_module.db.get_office_balance()
+    jan_history = app_module.db.get_previous_statement_closing('2025-02-01')
+    jan_audit = _audit_count()
+
+    assert jan_history is not None, "January history must exist after approval"
+
+    # Upload February
+    feb_csv = (
+        f"Date,Description,Money Out,Money In,Balance\r\n"
+        f"2025-02-01,Opening Balance,,,{jan_history:.2f}\r\n"
+        f"2025-02-10,Client Fee,,8000.00,37125.00\r\n"
+    ).encode()
+    resp_feb = client.post(
+        '/office-account/import-statement',
+        data={
+            'statement_file': (io.BytesIO(feb_csv), 'feb.csv'),
+            'statement_start': '2025-02-01',
+            'statement_end': '2025-02-28',
+        },
+        content_type='multipart/form-data',
+        follow_redirects=False,
+    )
+    batch_feb = resp_feb.headers.get('Location', '').split('batch=')[-1]
+    assert batch_feb
+
+    # Cancel February
+    client.post(
+        '/office-account/import-cancel',
+        data={'batch_id': batch_feb},
+        follow_redirects=False,
+    )
+
+    # January must be completely intact
+    assert len(app_module.db.get_office_transactions() or []) == jan_cashbook_count, (
+        "January transaction count must not change after cancelling February"
+    )
+    assert app_module.db.get_office_balance() == jan_balance, (
+        "Office Account balance must not change after cancelling February"
+    )
+    assert app_module.db.get_previous_statement_closing('2025-02-01') == jan_history, (
+        "January statement history must be unchanged after cancelling February"
+    )
+    assert _audit_count() == jan_audit, (
+        "No new audit entries should exist after cancelling February"
+    )
+
+    # No February staging must remain
+    feb_rows, _ = app_module.db.get_office_import_staging(batch_feb)
+    assert feb_rows == [], "February staging must be deleted after cancel"
+
+    # Statement history for March must not exist
+    assert app_module.db.get_previous_statement_closing('2025-03-01') == jan_history, (
+        "Statement history for March must not be created (February was cancelled)"
+    )
+
+
 def test_approve_import_creates_office_transactions(client):
     # Record initial office balance and transaction count
     initial_balance = app_module.db.get_office_balance()

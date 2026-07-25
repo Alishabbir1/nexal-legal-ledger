@@ -1394,13 +1394,8 @@ def office_import_statement():
         )
 
         dup_count = sum(1 for r in rows if r.get('is_duplicate'))
-        log_audit(
-            'Office Account', 'IMPORT_BATCH_CREATED',
-            details=(
-                f"File: {filename}, {len(rows)} row(s) parsed, "
-                f"{dup_count} potential duplicate(s). Batch: {batch_id[:8]}"
-            ),
-        )
+        # No audit entry here: nothing is committed until the user approves.
+        # All audit logging happens in office_import_approve.
         return redirect(url_for('office_import_review', batch=batch_id))
 
     today = datetime.now().strftime('%Y-%m-%d')
@@ -1567,6 +1562,7 @@ def office_import_approve():
         'Office Account', 'IMPORT_APPROVED',
         details=(
             f"Batch {batch_id[:8]}: {created}/{len(kept)} transaction(s) imported "
+            f"from '{batch_meta.get('filename', 'unknown') if batch_meta else 'unknown'}' "
             f"by {current_username()}. Errors: {len(error_msgs)}"
         ),
     )
@@ -1588,14 +1584,15 @@ def office_import_approve():
 
 @app.route('/office-account/import-cancel', methods=['POST'])
 def office_import_cancel():
-    """Cancel an in-progress import and delete its staging rows."""
+    """
+    Cancel an in-progress import.
+    Deletes ALL staging data for the batch and leaves ZERO traces.
+    Nothing is written to audit_log, office_cashbook, or office_statement_history.
+    After this call the application behaves exactly as if the upload never happened.
+    """
     batch_id = request.form.get('batch_id', '').strip()
     if batch_id:
         db.delete_office_import_staging(batch_id)
-        log_audit(
-            'Office Account', 'IMPORT_CANCELLED',
-            details=f"User cancelled import. Batch: {batch_id[:8]}",
-        )
     flash('Import cancelled.', 'info')
     return redirect(url_for('office_account'))
 
