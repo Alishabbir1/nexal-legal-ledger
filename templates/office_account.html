@@ -111,6 +111,21 @@
                         <button type="button" class="btn btn-danger decline-office-cheque-btn" data-form-id="decline-office-form-{{ trans.office_cashbook_id }}" data-reason-id="decline-office-reason-{{ trans.office_cashbook_id }}" style="padding: 5px 10px; font-size: 12px;">Decline</button>
                     </form>
                     {% endif %}
+                    {% elif trans.get('import_batch_id') and status == 'Pending' and trans.get('office_cashbook_id') %}
+                    {# Imported uncleared transaction — mark as cleared when confirmed #}
+                    {% if current_role in ('admin', 'staff') %}
+                    <form id="clear-import-form-{{ trans.office_cashbook_id }}" method="POST"
+                          action="{{ url_for('office_import_clear_transaction', row_id=trans.office_cashbook_id) }}"
+                          style="display: inline;">
+                        <button type="button"
+                                class="btn btn-success clear-import-btn"
+                                data-form-id="clear-import-form-{{ trans.office_cashbook_id }}"
+                                style="padding: 5px 10px; font-size: 12px;"
+                                title="Mark this imported transaction as cleared — it will be included in totals">
+                            ✓ Mark Cleared
+                        </button>
+                    </form>
+                    {% endif %}
                     {% endif %}
                 </td>
             </tr>
@@ -168,6 +183,26 @@
         <div class="modal-actions">
             <button type="button" id="clear-office-modal-yes" class="btn btn-success">Yes — Clear Cheque</button>
             <button type="button" id="clear-office-modal-no" class="btn btn-secondary">No — Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- Mark Imported Transaction Cleared Confirmation Modal -->
+<div id="clear-import-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-box">
+        <h3 style="margin-bottom: 15px;">Mark Transaction as Cleared</h3>
+        <p class="modal-message">Are you sure you want to mark this imported transaction as Cleared?</p>
+        <div style="background: #e7f3ff; padding: 12px; border-radius: 5px; margin-bottom: 15px; font-size: 14px;">
+            <strong>This action will:</strong>
+            <ul style="margin: 8px 0 0 20px; padding: 0;">
+                <li>Update the Office Account balance</li>
+                <li>Include this transaction in income/expense totals</li>
+                <li>Record the clearance in the Audit Log</li>
+            </ul>
+        </div>
+        <div class="modal-actions">
+            <button type="button" id="clear-import-modal-yes" class="btn btn-success">Yes — Mark Cleared</button>
+            <button type="button" id="clear-import-modal-no" class="btn btn-secondary">No — Cancel</button>
         </div>
     </div>
 </div>
@@ -301,6 +336,43 @@
         if (e.target === clearModal) {
             clearModal.style.display = 'none';
             clearFormToSubmit = null;
+        }
+    };
+
+    // ── Mark imported transaction cleared ───────────────────────
+    var clearImportModal   = document.getElementById('clear-import-modal');
+    var clearImportBtnYes  = document.getElementById('clear-import-modal-yes');
+    var clearImportBtnNo   = document.getElementById('clear-import-modal-no');
+    var clearImportForm    = null;
+
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.clear-import-btn');
+        if (btn) {
+            e.preventDefault();
+            clearImportForm = document.getElementById(btn.getAttribute('data-form-id'));
+            if (clearImportForm) {
+                clearImportModal.style.display = 'flex';
+            }
+        }
+    });
+
+    clearImportBtnNo.onclick = function() {
+        clearImportModal.style.display = 'none';
+        clearImportForm = null;
+    };
+
+    clearImportBtnYes.onclick = function() {
+        if (clearImportForm) {
+            clearImportForm.submit();
+        }
+        clearImportModal.style.display = 'none';
+        clearImportForm = null;
+    };
+
+    clearImportModal.onclick = function(e) {
+        if (e.target === clearImportModal) {
+            clearImportModal.style.display = 'none';
+            clearImportForm = null;
         }
     };
 })();

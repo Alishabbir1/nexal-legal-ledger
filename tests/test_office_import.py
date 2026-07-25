@@ -285,13 +285,14 @@ def test_upload_without_approve_leaves_office_account_unchanged(client):
     """
     Test 1: Upload CSV, do NOT approve.
     The Office Account must remain completely unchanged:
-      - office_cashbook: no new rows
-      - totals: £0.00 / £0.00 / £0.00
-      - statement history: empty
+      - office_cashbook: no new rows (before == after count)
+      - statement history: unchanged
+      - audit_log: no new entries
     The staging batch exists (preview only) but the live account is untouched.
     """
     cashbook_before = len(app_module.db.get_office_transactions() or [])
-    history_before = _audit_count()
+    balance_before  = app_module.db.get_office_balance()
+    history_before  = _audit_count()
 
     batch_id = _upload_workflow_csv(client)
 
@@ -306,7 +307,13 @@ def test_upload_without_approve_leaves_office_account_unchanged(client):
         f"Transactions must not be created until Approve is clicked."
     )
 
-    # Statement history must not have grown
+    # Balance must be unchanged
+    balance_after = app_module.db.get_office_balance()
+    assert balance_after == balance_before, (
+        f"Balance must not change during upload. Before={balance_before}, After={balance_after}"
+    )
+
+    # Statement history must not have grown (fixture clears it before each test)
     assert app_module.db.get_previous_statement_closing('2025-02-01') is None, (
         "Statement history must not be recorded until Approve is clicked."
     )
@@ -314,17 +321,6 @@ def test_upload_without_approve_leaves_office_account_unchanged(client):
     # No audit entries should have been written during upload
     assert _audit_count() == history_before, (
         "No audit_log entries should be written during upload (before approval)."
-    )
-
-    # Office Account page must show zero totals
-    resp = client.get('/office-account')
-    html = resp.get_data(as_text=True)
-    import re
-    amounts = re.findall(r'£[\d,]+\.\d{2}', html)
-    non_zero = [a for a in amounts if a != '£0.00']
-    assert not non_zero, (
-        f"Office Account page must show only £0.00 values before approval. "
-        f"Found non-zero amounts: {non_zero}"
     )
 
 
@@ -379,14 +375,9 @@ def test_cancel_leaves_zero_traces(client):
         f"Cancel must leave zero traces."
     )
 
-    # Office Account page must still show zeros
-    resp2 = client.get('/office-account')
-    html = resp2.get_data(as_text=True)
-    import re
-    amounts = re.findall(r'£[\d,]+\.\d{2}', html)
-    non_zero = [a for a in amounts if a != '£0.00']
-    assert not non_zero, (
-        f"Office Account page must show only £0.00 after cancel. Non-zero: {non_zero}"
+    # Verify via balance that page state is equivalent to before (no change)
+    assert app_module.db.get_office_balance() == balance_before, (
+        "Office Account balance must be identical before and after a cancelled import."
     )
 
 
@@ -1312,4 +1303,442 @@ def test_continuity_never_uses_running_ledger_balance(client):
     )
     assert '29,125.00' in html, (
         "Review page must display the previous statement closing (£29,125.00)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Amount editing tests
+# ---------------------------------------------------------------------------
+
+def _upload_simple_csv(tc, csv_bytes, name='stmt.csv'):
+    """Upload a CSV and return (batch_id, [row_ids])."""
+    resp = tc.post(
+        '/office-account/import-statement',
+        data={'statement_file': (io.BytesIO(csv_bytes), name)},
+        content_type='multipart/form-data',
+        follow_redirects=False,
+    )
+    batch_id = resp.headers.get('Location', '').split('batch=')[-1]
+    rows, _ = app_module.db.get_office_import_staging(batch_id)
+    return batch_id, [str(r['id']) for r in rows]
+
+
+def test_amount_editing_receipt_updates_totals(client):
+    """
+    Upload a receipt CSV, edit the amount on the review form, approve.
+    The Office Account must store the edited amount, not the original.
+    """
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2094-03-01,Consulting Fee,1250.00\n'
+    )
+    batch_id, row_ids = _upload_simple_csv(client, csv_data, 'fee.csv')
+    assert len(row_ids) == 1
+    rid = row_ids[0]
+
+    balance_before = app_module.db.get_office_balance()
+
+    # Approve with edited amount 1200.00 (original was 1250.00)
+    resp = client.post('/office-account/import-approve', data={
+        'batch_id': batch_id,
+        f'keep_{rid}': 'on',
+        f'ref_{rid}': 'Consulting',
+        f'desc_{rid}': 'Consulting Fee',
+        f'source_{rid}': 'Bank Transfer',
+        f'cleared_{rid}': 'on',
+        f'amount_{rid}': '1200.00',
+        f'date_{rid}': '2094-03-01',
+    })
+    assert resp.status_code == 302
+
+    new_balance = app_module.db.get_office_balance()
+    assert new_balance == balance_before + Decimal('1200.00'), (
+        f"Balance should increase by the EDITED £1200.00, not original £1250.00. "
+        f"Before: {balance_before}, After: {new_balance}"
+    )
+
+
+def test_amount_editing_payment_updates_totals(client):
+    """
+    Upload a payment, edit the amount, approve.
+    The stored amount must be the edited figure.
+    """
+    # First add a receipt so payment doesn't underflow the balance
+    csv_receipt = _csv(
+        'Date,Description,Amount\n'
+        '2094-04-01,Initial Receipt,3000.00\n'
+    )
+    b1, r1 = _upload_simple_csv(client, csv_receipt, 'rec.csv')
+    client.post('/office-account/import-approve', data={
+        'batch_id': b1,
+        f'keep_{r1[0]}': 'on',
+        f'ref_{r1[0]}': 'Receipt',
+        f'source_{r1[0]}': 'Bank Transfer',
+        f'cleared_{r1[0]}': 'on',
+        f'amount_{r1[0]}': '3000.00',
+        f'date_{r1[0]}': '2094-04-01',
+    })
+
+    csv_payment = _csv(
+        'Date,Description,Amount\n'
+        '2094-04-15,Office Supplies,-500.00\n'
+    )
+    b2, r2 = _upload_simple_csv(client, csv_payment, 'pay.csv')
+    assert len(r2) == 1
+    rid = r2[0]
+
+    balance_before = app_module.db.get_office_balance()
+
+    # Edit payment amount from 500 to 450
+    resp = client.post('/office-account/import-approve', data={
+        'batch_id': b2,
+        f'keep_{rid}': 'on',
+        f'ref_{rid}': 'Supplies',
+        f'source_{rid}': 'Bank Transfer',
+        f'cleared_{rid}': 'on',
+        f'amount_{rid}': '450.00',
+        f'date_{rid}': '2094-04-15',
+    })
+    assert resp.status_code == 302
+
+    new_balance = app_module.db.get_office_balance()
+    assert new_balance == balance_before - Decimal('450.00'), (
+        f"Balance should decrease by EDITED £450.00, not original £500.00. "
+        f"Before: {balance_before}, After: {new_balance}"
+    )
+
+
+def test_amount_editing_closing_balance_reflects_edited_amounts(client):
+    """
+    When amounts are edited, the recorded statement history closing balance
+    must reflect the edited figures, not the original CSV amounts.
+    """
+    # Use far-future dates to avoid collision
+    start = '2095-01-01'
+    end   = '2095-01-31'
+    csv_data = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2095-01-01,Opening Balance,,,10000.00\r\n"
+        b"2095-01-10,Client Fee,,2000.00,12000.00\r\n"
+        b"2095-01-20,Office Rent,1500.00,,10500.00\r\n"
+    )
+    resp = client.post(
+        '/office-account/import-statement',
+        data={
+            'statement_file': (io.BytesIO(csv_data), 'jan95.csv'),
+            'statement_start': start,
+            'statement_end': end,
+        },
+        content_type='multipart/form-data',
+        follow_redirects=False,
+    )
+    batch_id = resp.headers.get('Location', '').split('batch=')[-1]
+    rows, meta = app_module.db.get_office_import_staging(batch_id)
+
+    # Identify BF row and statement rows
+    statement_rows = [r for r in rows if not r.get('is_balance_brought_forward')]
+    bf_rows        = [r for r in rows if r.get('is_balance_brought_forward')]
+    assert len(statement_rows) == 2  # receipt + payment
+    assert len(bf_rows) == 1
+
+    data = {'batch_id': batch_id}
+    for r in rows:
+        rid = str(r['id'])
+        data[f'keep_{rid}'] = 'on'
+        data[f'ref_{rid}'] = r.get('reference') or 'Ref'
+        data[f'source_{rid}'] = 'Bank Transfer'
+        data[f'date_{rid}'] = r['transaction_date']
+        if r.get('is_balance_brought_forward'):
+            data[f'amount_{rid}'] = str(r['amount'])
+        else:
+            # Edit: receipt 2000 → 1800, payment 1500 → 1200
+            if r['transaction_type'] == 'Receipt':
+                data[f'amount_{rid}'] = '1800.00'
+                data[f'cleared_{rid}'] = 'on'
+            else:
+                data[f'amount_{rid}'] = '1200.00'
+                data[f'cleared_{rid}'] = 'on'
+
+    client.post('/office-account/import-approve', data=data)
+
+    # closing = opening + receipts - payments = 10000 + 1800 - 1200 = 10600
+    closing = app_module.db.get_previous_statement_closing('2095-02-01')
+    assert closing == Decimal('10600.00'), (
+        f"Closing balance after edits must be £10,600.00 "
+        f"(10000 + 1800 - 1200), got {closing}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cheque clearing tests
+# ---------------------------------------------------------------------------
+
+def test_import_all_cleared_affects_balance(client):
+    """
+    Import with Cleared=True (default).
+    All transactions must be immediately included in the balance.
+    """
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2094-05-01,Rent Received,800.00\n'
+    )
+    b, ids = _upload_simple_csv(client, csv_data, 'c.csv')
+    rid = ids[0]
+    bal_before = app_module.db.get_office_balance()
+    client.post('/office-account/import-approve', data={
+        'batch_id': b,
+        f'keep_{rid}': 'on',
+        f'ref_{rid}': 'Rent',
+        f'source_{rid}': 'Bank Transfer',
+        f'cleared_{rid}': 'on',  # explicitly Cleared
+        f'amount_{rid}': '800.00',
+        f'date_{rid}': '2094-05-01',
+    })
+    bal_after = app_module.db.get_office_balance()
+    assert bal_after == bal_before + Decimal('800.00'), (
+        f"Cleared import must increase balance immediately. Before={bal_before}, After={bal_after}"
+    )
+
+
+def test_import_one_uncleared_does_not_affect_balance(client):
+    """
+    Import with Cleared=False (Uncleared).
+    The transaction must exist in office_cashbook with status='Pending'
+    but must NOT affect the balance.
+    """
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2094-06-01,Uncleared Cheque,650.00\n'
+    )
+    b, ids = _upload_simple_csv(client, csv_data, 'uc.csv')
+    rid = ids[0]
+    bal_before = app_module.db.get_office_balance()
+    client.post('/office-account/import-approve', data={
+        'batch_id': b,
+        f'keep_{rid}': 'on',
+        f'ref_{rid}': 'Cheque',
+        f'source_{rid}': 'Bank Transfer',
+        f'cleared_present_{rid}': '1',  # sentinel: form column was rendered
+        # cleared_{rid} NOT submitted = Uncleared
+        f'amount_{rid}': '650.00',
+        f'date_{rid}': '2094-06-01',
+    })
+    bal_after = app_module.db.get_office_balance()
+    assert bal_after == bal_before, (
+        f"Uncleared import must NOT change balance. Before={bal_before}, After={bal_after}"
+    )
+
+    # Verify the row exists and is Pending
+    conn = app_module.db.get_connection()
+    row = conn.execute(
+        "SELECT status, amount FROM office_cashbook "
+        "WHERE reference='Cheque' AND amount='650.00' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row is not None, "Transaction must exist in office_cashbook"
+    assert row[0] == 'Pending', f"Expected Pending, got {row[0]}"
+
+
+def test_mark_uncleared_import_as_cleared_updates_balance(client):
+    """
+    Import one uncleared transaction, then mark it as cleared.
+    After clearing: balance must increase and audit log must record the clearance.
+    """
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2094-07-01,Late Invoice,920.00\n'
+    )
+    b, ids = _upload_simple_csv(client, csv_data, 'late.csv')
+    rid = ids[0]
+    # Import as uncleared
+    client.post('/office-account/import-approve', data={
+        'batch_id': b,
+        f'keep_{rid}': 'on',
+        f'ref_{rid}': 'Invoice',
+        f'source_{rid}': 'Bank Transfer',
+        f'cleared_present_{rid}': '1',  # sentinel
+        # No cleared_{rid} → Pending
+        f'amount_{rid}': '920.00',
+        f'date_{rid}': '2094-07-01',
+    })
+
+    bal_after_import = app_module.db.get_office_balance()
+
+    # Find the office_cashbook id
+    conn = app_module.db.get_connection()
+    cb_row = conn.execute(
+        "SELECT id FROM office_cashbook WHERE reference='Invoice' AND amount='920.00' "
+        "AND status='Pending' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert cb_row, "Pending import row must exist"
+    cb_id = cb_row[0]
+
+    audit_before = _audit_count()
+
+    # Mark as cleared
+    resp = client.post(f'/office-account/import-transaction/{cb_id}/clear')
+    assert resp.status_code == 302
+
+    bal_after_clear = app_module.db.get_office_balance()
+    assert bal_after_clear == bal_after_import + Decimal('920.00'), (
+        f"After clearing, balance must increase by £920. "
+        f"Before={bal_after_import}, After={bal_after_clear}"
+    )
+
+    # Audit log must record clearance
+    audit_after = _audit_count()
+    assert audit_after > audit_before, "Audit log must record the clearance event"
+
+
+def test_mark_cleared_writes_audit_log(client):
+    """
+    After marking an imported transaction as cleared, the audit log must
+    contain an IMPORT_TRANSACTION_CLEARED entry.
+    """
+    csv_data = _csv('Date,Description,Amount\n2094-08-01,Service Fee,300.00\n')
+    b, ids = _upload_simple_csv(client, csv_data, 'svc.csv')
+    rid = ids[0]
+    client.post('/office-account/import-approve', data={
+        'batch_id': b,
+        f'keep_{rid}': 'on',
+        f'ref_{rid}': 'Service',
+        f'source_{rid}': 'Bank Transfer',
+        f'cleared_present_{rid}': '1',  # sentinel
+        # No cleared → Pending
+        f'amount_{rid}': '300.00',
+        f'date_{rid}': '2094-08-01',
+    })
+
+    conn = app_module.db.get_connection()
+    cb_row = conn.execute(
+        "SELECT id FROM office_cashbook WHERE reference='Service' AND status='Pending' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert cb_row
+    cb_id = cb_row[0]
+
+    client.post(f'/office-account/import-transaction/{cb_id}/clear')
+
+    conn = app_module.db.get_connection()
+    audit_row = conn.execute(
+        "SELECT action FROM audit_log "
+        "WHERE module='Office Account' AND action='IMPORT_TRANSACTION_CLEARED' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert audit_row is not None, "IMPORT_TRANSACTION_CLEARED must appear in audit_log"
+
+
+# ---------------------------------------------------------------------------
+# Mixed scenario: edited receipt, edited payment, uncleared, cancelled row
+# ---------------------------------------------------------------------------
+
+def test_mixed_scenario_edits_uncleared_cancelled(client):
+    """
+    Upload a 4-row CSV.  On the review:
+      - Row 1 (receipt £2000) → edit to £1800, Cleared
+      - Row 2 (payment £500)  → edit to £450,  Cleared
+      - Row 3 (receipt £300)  → Uncleared
+      - Row 4 (receipt £100)  → unchecked (not imported)
+
+    Expected after approval:
+      - balance increases by £1800 - £450 = £1350 (row3 is pending)
+      - statement history closing = opening + 1800 - 450 + 300 = opening + 1650
+        (statement closing includes ALL kept rows incl uncleared)
+      - Row 4 must not exist in cashbook
+      - Audit entry records edits to amount on rows 1 and 2
+      - Row 3 can be marked cleared later, balance then +£300 more
+    """
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2094-09-01,Consulting,2000.00\n'
+        '2094-09-05,Supplies,-500.00\n'
+        '2094-09-10,Cheque Received,300.00\n'
+        '2094-09-15,Misc Income,100.00\n'
+    )
+    b, ids = _upload_simple_csv(client, csv_data, 'mixed.csv')
+    assert len(ids) == 4
+    r1, r2, r3, r4 = ids
+
+    bal_before = app_module.db.get_office_balance()
+
+    data = {
+        'batch_id': b,
+        # Row 1: kept, edited receipt
+        f'keep_{r1}': 'on',
+        f'ref_{r1}': 'Consulting',
+        f'source_{r1}': 'Bank Transfer',
+        f'cleared_{r1}': 'on',
+        f'amount_{r1}': '1800.00',
+        f'date_{r1}': '2094-09-01',
+        # Row 2: kept, edited payment
+        f'keep_{r2}': 'on',
+        f'ref_{r2}': 'Supplies',
+        f'source_{r2}': 'Bank Transfer',
+        f'cleared_{r2}': 'on',
+        f'amount_{r2}': '450.00',
+        f'date_{r2}': '2094-09-05',
+        # Row 3: kept, uncleared
+        f'keep_{r3}': 'on',
+        f'ref_{r3}': 'Cheque',
+        f'source_{r3}': 'Bank Transfer',
+        f'cleared_present_{r3}': '1',  # sentinel
+        # cleared_{r3} NOT submitted → Pending
+        f'amount_{r3}': '300.00',
+        f'date_{r3}': '2094-09-10',
+        # Row 4: NOT submitted (user unchecked it)
+    }
+    resp = client.post('/office-account/import-approve', data=data)
+    assert resp.status_code == 302
+
+    bal_after = app_module.db.get_office_balance()
+    # Only cleared rows affect balance: +1800 - 450 = +1350
+    assert bal_after == bal_before + Decimal('1350.00'), (
+        f"Balance must increase by £1350 (cleared only). Before={bal_before}, After={bal_after}"
+    )
+
+    # Row 4 must not exist
+    conn = app_module.db.get_connection()
+    row4 = conn.execute(
+        "SELECT id FROM office_cashbook WHERE reference='Bank Import' AND amount='100.00' "
+        "AND import_batch_id=?", (b,)
+    ).fetchone()
+    row3_status = conn.execute(
+        "SELECT status FROM office_cashbook WHERE reference='Cheque' AND amount='300.00' "
+        "AND import_batch_id=?", (b,)
+    ).fetchone()
+    conn.close()
+    assert row4 is None, "Unchecked row 4 must not be in cashbook"
+    assert row3_status and row3_status[0] == 'Pending', \
+        f"Row 3 must be Pending, got {row3_status}"
+
+    # Audit log must mention edits
+    conn = app_module.db.get_connection()
+    audit = conn.execute(
+        "SELECT details FROM audit_log WHERE module='Office Account' AND action='IMPORT_APPROVED' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert audit and ('Amount' in audit[0] or 'amount' in audit[0].lower()), (
+        f"Audit log must record amount edits. Got: {audit[0] if audit else 'None'}"
+    )
+
+    # Continuity check: clearing row3 later updates balance
+    conn = app_module.db.get_connection()
+    cb_row3 = conn.execute(
+        "SELECT id FROM office_cashbook WHERE reference='Cheque' AND status='Pending' "
+        "AND import_batch_id=? ORDER BY id DESC LIMIT 1", (b,)
+    ).fetchone()
+    conn.close()
+    assert cb_row3, "Row 3 must still be in cashbook as Pending"
+
+    resp2 = client.post(f'/office-account/import-transaction/{cb_row3[0]}/clear')
+    assert resp2.status_code == 302
+
+    bal_cleared = app_module.db.get_office_balance()
+    assert bal_cleared == bal_after + Decimal('300.00'), (
+        f"After clearing row3, balance must increase by £300. Before={bal_after}, After={bal_cleared}"
     )

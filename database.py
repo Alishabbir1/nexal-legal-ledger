@@ -463,6 +463,8 @@ class Database:
         self._migrate_reconciliation_versioning(cursor)
         # Office Account bank statement import (Phase 1)
         self._ensure_column(cursor, 'office_cashbook', 'import_batch_id', "TEXT")
+        # Track which import staging rows are Balance Brought Forward entries
+        self._ensure_column(cursor, 'office_import_staging', 'is_balance_brought_forward', "INTEGER DEFAULT 0")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS office_import_staging (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2744,7 +2746,8 @@ class Database:
                                   transaction_type: str, reference: str, source: str,
                                   description: str = None, created_by: str = 'System',
                                   import_batch_id: str = None,
-                                  skip_balance_check: bool = False) -> int:
+                                  skip_balance_check: bool = False,
+                                  status: str = None) -> int:
         """
         Create office-only transaction. NEVER touches client ledger or cashbook_transactions.
         client_id and matter_id are implicitly NULL (office account only).
@@ -2752,6 +2755,9 @@ class Database:
         skip_balance_check: pass True for bulk import approvals where the user has
         explicitly reviewed and approved all rows; avoids date-filtered intermediate
         balance checks that falsely block legitimate historical payments.
+
+        status: override the default status ('Cleared' for non-cheque, 'Pending' for Cheque).
+        Pass 'Pending' to mark an imported transaction as uncleared.
         """
         if not reference or not reference.strip():
             raise ValueError("Reference is mandatory")
@@ -2761,7 +2767,13 @@ class Database:
                 raise ValueError("Office account balance cannot go below £0.")
         self._ensure_month_unlocked(transaction_date)
 
-        status = 'Pending' if source == 'Cheque' else 'Cleared'
+        # Determine effective status.  Cheques default to Pending; everything else
+        # defaults to Cleared unless the caller explicitly overrides (e.g. an import
+        # where the user ticked the "Uncleared" option on the review screen).
+        if status is None:
+            status = 'Pending' if source == 'Cheque' else 'Cleared'
+        elif status not in ('Pending', 'Cleared'):
+            status = 'Cleared'
         last_err = None
         for attempt in range(DB_WRITE_RETRIES):
             conn = self.get_connection()
@@ -2847,8 +2859,9 @@ class Database:
                     (batch_id, filename, statement_start, statement_end, row_number,
                      transaction_date, description, reference, amount, transaction_type,
                      source, is_duplicate, created_by,
-                     opening_balance, closing_balance, ledger_balance_before, balance_match)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     opening_balance, closing_balance, ledger_balance_before, balance_match,
+                     is_balance_brought_forward)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -2868,6 +2881,7 @@ class Database:
                         cb_str,
                         lb_str,
                         balance_match,
+                        1 if row.get('is_balance_brought_forward') else 0,
                     ),
                 )
             conn.commit()
@@ -3020,6 +3034,65 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+
+    def clear_office_import_transaction(self, row_id: int, cleared_by: str) -> None:
+        """
+        Mark an imported Office Account transaction (status=Pending) as Cleared.
+
+        Only allowed for transactions that originated from a bank statement import
+        (import_batch_id IS NOT NULL) and are currently Pending.
+        This is the counterpart to the 'Uncleared' checkbox on the review screen.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, status, import_batch_id, transaction_date, source "
+                "FROM office_cashbook WHERE id = ?",
+                (row_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError("Transaction not found")
+            row = dict(row)
+        finally:
+            conn.close()
+
+        if not row.get('import_batch_id'):
+            raise ValueError(
+                "Only imported transactions can be cleared via this action. "
+                "Use the cheque clearance workflow for manually entered cheques."
+            )
+        if row['status'] != 'Pending':
+            raise ValueError(
+                f"This transaction is already {row['status']} and cannot be cleared again."
+            )
+        self._ensure_month_unlocked(row['transaction_date'])
+
+        cleared_date = datetime.now().strftime('%Y-%m-%d')
+        last_err = None
+        for attempt in range(DB_WRITE_RETRIES):
+            conn = self.get_connection()
+            try:
+                conn.execute(
+                    "UPDATE office_cashbook "
+                    "SET status = 'Cleared', cleared_date = ? "
+                    "WHERE id = ? AND status = 'Pending'",
+                    (cleared_date, row_id),
+                )
+                conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                last_err = exc
+                if 'locked' in str(exc).lower() or 'busy' in str(exc).lower():
+                    _log_db_retry('clear_office_import_transaction', attempt + 1, exc)
+                    time.sleep(DB_WRITE_RETRY_DELAY)
+                else:
+                    raise ValueError(f"Database error: {exc}")
+            finally:
+                conn.close()
+        raise ValueError(f"Database busy after {DB_WRITE_RETRIES} retries: {last_err}")
 
     def delete_office_import_staging(self, batch_id: str) -> None:
         """Delete all staging rows for a batch (cancel or post-approval cleanup)."""
@@ -3973,6 +4046,7 @@ class Database:
                 'client_name': None,
                 'is_fee_transfer': False,
                 'office_cashbook_id': oc['id'],
+                'import_batch_id': oc.get('import_batch_id'),
                 'created_by': oc.get('created_by', 'System'),
             })
 

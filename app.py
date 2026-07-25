@@ -1421,7 +1421,8 @@ def office_import_review():
         return redirect(url_for('office_import_statement'))
 
     receipt_total = sum(
-        float(r['amount']) for r in rows if r['transaction_type'] == 'Receipt'
+        float(r['amount']) for r in rows
+        if r['transaction_type'] == 'Receipt' and not r.get('is_balance_brought_forward')
     )
     payment_total = sum(
         float(r['amount']) for r in rows if r['transaction_type'] == 'Payment'
@@ -1471,6 +1472,7 @@ def office_import_approve():
 
     # Collect which rows the user kept and their (possibly edited) values
     kept = []
+    edit_audit_lines = []   # per-row change summary for the audit log
     for row in rows:
         row_id = str(row['id'])
         if request.form.get(f'keep_{row_id}') != 'on':
@@ -1484,14 +1486,73 @@ def office_import_approve():
         source = request.form.get(f'source_{row_id}') or 'Bank Transfer'
         if source not in ('Cash', 'Cheque', 'Bank Transfer', 'Card'):
             source = 'Bank Transfer'
+
+        # ── Edited amount ───────────────────────────────────────────────
+        staged_amount = Decimal(str(row['amount']))
+        amount_str = request.form.get(f'amount_{row_id}', '').strip()
+        try:
+            edited_amount = Decimal(amount_str) if amount_str else None
+            if edited_amount is not None and edited_amount <= Decimal('0'):
+                edited_amount = None
+        except Exception:
+            edited_amount = None
+        amount = edited_amount if edited_amount is not None else staged_amount
+
+        # ── Edited date ─────────────────────────────────────────────────
+        staged_date = row['transaction_date']
+        edited_date = (request.form.get(f'date_{row_id}') or '').strip()
+        # Basic ISO date validation
+        if edited_date:
+            try:
+                datetime.strptime(edited_date, '%Y-%m-%d')
+                transaction_date = edited_date
+            except ValueError:
+                transaction_date = staged_date
+        else:
+            transaction_date = staged_date
+
+        # ── Cleared checkbox ────────────────────────────────────────────
+        # Cheques are always Pending (existing behaviour).
+        # For all other sources, the review form emits a hidden sentinel
+        # `cleared_present_{id}=1` for every non-BF row.  When the sentinel
+        # is present we can trust the checkbox value; when it is absent the
+        # POST came from old test code or a programmatic call that doesn't
+        # know about the Cleared column — default to Cleared.
+        if source == 'Cheque':
+            row_status = 'Pending'
+        elif request.form.get(f'cleared_present_{row_id}') == '1':
+            row_status = 'Cleared' if request.form.get(f'cleared_{row_id}') == 'on' else 'Pending'
+        else:
+            row_status = 'Cleared'
+
+        # ── Audit diff ──────────────────────────────────────────────────
+        staged_desc = (row.get('description') or '').strip()
+        staged_ref  = (row.get('reference') or '').strip()
+        diffs = []
+        if amount != staged_amount:
+            diffs.append(f"Amount £{staged_amount:,.2f}→£{amount:,.2f}")
+        if transaction_date != staged_date:
+            diffs.append(f"Date {staged_date}→{transaction_date}")
+        if description and description != staged_desc:
+            diffs.append(f"Description edited")
+        if reference != staged_ref and reference != 'Bank Import':
+            diffs.append(f"Reference edited")
+        if row_status == 'Pending' and source != 'Cheque':
+            diffs.append("Imported as Uncleared")
+        if diffs:
+            label = description or row.get('description') or reference
+            edit_audit_lines.append(f"  [{label}] {'; '.join(diffs)}")
+
         kept.append({
-            'transaction_date': row['transaction_date'],
-            'amount': Decimal(str(row['amount'])),
+            'transaction_date': transaction_date,
+            'amount': amount,
             'transaction_type': row['transaction_type'],
             'reference': reference,
             'source': source,
             'description': description,
             'import_batch_id': batch_id,
+            'status': row_status,
+            'is_balance_brought_forward': bool(row.get('is_balance_brought_forward')),
         })
 
     if not kept:
@@ -1520,6 +1581,7 @@ def office_import_approve():
                 created_by=current_username(),
                 import_batch_id=row['import_batch_id'],
                 skip_balance_check=True,  # user reviewed and approved these rows
+                status=row.get('status'),
             )
             created += 1
         except ValueError as exc:
@@ -1535,19 +1597,19 @@ def office_import_approve():
     # transaction was created. statement_history is the sole source of truth for
     # opening-balance continuity — we never use the running ledger sum for that.
     if created and batch_meta and batch_meta.get('opening_balance') is not None:
-        cb = batch_meta.get('closing_balance')
-        if cb is None:
-            # Fallback: compute from opening + net of kept rows
-            receipts = sum(
-                r['amount'] for r in kept
-                if r['transaction_type'] == 'Receipt'
-            )
-            payments = sum(
-                r['amount'] for r in kept
-                if r['transaction_type'] == 'Payment'
-            )
-            opening = Decimal(str(batch_meta['opening_balance']))
-            cb = str(opening + receipts - payments)
+        # Compute actual closing from the approved (possibly edited) amounts.
+        # Exclude the BF row — it equals opening_balance and is not a statement transaction.
+        opening = Decimal(str(batch_meta['opening_balance']))
+        stmt_receipts = sum(
+            k['amount'] for k in kept
+            if k['transaction_type'] == 'Receipt'
+            and not k.get('is_balance_brought_forward')
+        )
+        stmt_payments = sum(
+            k['amount'] for k in kept
+            if k['transaction_type'] == 'Payment'
+        )
+        cb = str(opening + stmt_receipts - stmt_payments)
         db.record_statement_history(
             batch_id=batch_id,
             filename=batch_meta.get('filename', ''),
@@ -1558,14 +1620,15 @@ def office_import_approve():
             approved_by=current_username(),
         )
 
-    log_audit(
-        'Office Account', 'IMPORT_APPROVED',
-        details=(
-            f"Batch {batch_id[:8]}: {created}/{len(kept)} transaction(s) imported "
-            f"from '{batch_meta.get('filename', 'unknown') if batch_meta else 'unknown'}' "
-            f"by {current_username()}. Errors: {len(error_msgs)}"
-        ),
+    # Write audit entry for the approval, including any per-row edits
+    audit_detail = (
+        f"Batch {batch_id[:8]}: {created}/{len(kept)} transaction(s) imported "
+        f"from '{batch_meta.get('filename', 'unknown') if batch_meta else 'unknown'}' "
+        f"by {current_username()}. Errors: {len(error_msgs)}"
     )
+    if edit_audit_lines:
+        audit_detail += "\nEdits made during review:\n" + "\n".join(edit_audit_lines)
+    log_audit('Office Account', 'IMPORT_APPROVED', details=audit_detail)
 
     if error_msgs:
         for msg in error_msgs:
@@ -1594,6 +1657,34 @@ def office_import_cancel():
     if batch_id:
         db.delete_office_import_staging(batch_id)
     flash('Import cancelled.', 'info')
+    return redirect(url_for('office_account'))
+
+
+@app.route('/office-account/import-transaction/<int:row_id>/clear', methods=['POST'])
+def office_import_clear_transaction(row_id):
+    """
+    Mark an imported (uncleared) Office Account transaction as Cleared.
+
+    Only applies to rows that originated from a bank statement import and
+    currently have status='Pending'. This is distinct from the cheque clearance
+    workflow; it represents confirming that an imported transaction has fully
+    settled on the account.
+    """
+    try:
+        db.clear_office_import_transaction(row_id, current_username())
+        log_audit(
+            'Office Account',
+            'IMPORT_TRANSACTION_CLEARED',
+            record_id=str(row_id),
+            details=(
+                f"Imported transaction #{row_id} marked as Cleared by "
+                f"{current_username()} (role: {current_role()}). "
+                f"Balance now reflects this transaction."
+            ),
+        )
+        flash('Transaction marked as cleared. Balance has been updated.', 'success')
+    except Exception as exc:
+        flash(f'Error clearing transaction: {str(exc)}', 'error')
     return redirect(url_for('office_account'))
 
 

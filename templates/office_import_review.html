@@ -25,17 +25,25 @@
         </form>
     </div>
 
-    <!-- Summary stats -->
-    <div class="stat-grid" style="margin: 20px 0;">
+    <!-- Live summary stats -->
+    <div class="stat-grid" style="margin: 20px 0;" id="summaryStats">
         <div class="stat-card">
             <div class="stat-label">Total Receipts</div>
-            <div class="stat-value success">£{{ "{:,.2f}".format(receipt_total) }}</div>
-            <div class="stat-sub">{{ rows|selectattr('transaction_type','eq','Receipt')|list|length }} row(s)</div>
+            <div class="stat-value success" id="statReceipts">£{{ "{:,.2f}".format(receipt_total) }}</div>
+            <div class="stat-sub" id="statReceiptCount">{{ rows|selectattr('transaction_type','eq','Receipt')|selectattr('is_balance_brought_forward','equalto',0)|list|length }} row(s)</div>
         </div>
         <div class="stat-card">
             <div class="stat-label">Total Payments</div>
-            <div class="stat-value danger">£{{ "{:,.2f}".format(payment_total) }}</div>
-            <div class="stat-sub">{{ rows|selectattr('transaction_type','eq','Payment')|list|length }} row(s)</div>
+            <div class="stat-value danger" id="statPayments">£{{ "{:,.2f}".format(payment_total) }}</div>
+            <div class="stat-sub" id="statPaymentCount">{{ rows|selectattr('transaction_type','eq','Payment')|list|length }} row(s)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Net Movement</div>
+            <div class="stat-value" id="statNet"
+                 style="{% if receipt_total >= payment_total %}color: #059669;{% else %}color: #dc2626;{% endif %}">
+                {% if receipt_total >= payment_total %}+{% else %}−{% endif %}£{{ "{:,.2f}".format((receipt_total - payment_total)|abs) }}
+            </div>
+            <div class="stat-sub">Receipts minus Payments</div>
         </div>
         {% if dup_count > 0 %}
         <div class="stat-card">
@@ -73,12 +81,10 @@
                 <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Opening:</td>
                 <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(opening_balance|float) }}</td>
             </tr>
-            {% if closing_balance %}
             <tr>
                 <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Closing:</td>
-                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(closing_balance|float) }}</td>
+                <td style="padding: 3px 0; font-weight: 600;" id="continuityClosing">£{{ "{:,.2f}".format(closing_balance|float) if closing_balance else '—' }}</td>
             </tr>
-            {% endif %}
         </table>
     </div>
     {% elif balance_match == 'first_import' %}
@@ -97,12 +103,10 @@
                 <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Opening:</td>
                 <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(opening_balance|float) }}</td>
             </tr>
-            {% if closing_balance %}
             <tr>
                 <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Closing:</td>
-                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(closing_balance|float) }}</td>
+                <td style="padding: 3px 0; font-weight: 600;" id="continuityClosing">£{{ "{:,.2f}".format(closing_balance|float) if closing_balance else '—' }}</td>
             </tr>
-            {% endif %}
         </table>
         <p style="margin: 10px 0 0; font-size: 12px; color: var(--text-muted);">
             This opening balance will be recorded as the starting balance for future continuity checks.
@@ -125,12 +129,10 @@
                 <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Opening:</td>
                 <td style="padding: 3px 0; font-weight: 600; color: #dc2626;">£{{ "{:,.2f}".format(opening_balance|float) }}</td>
             </tr>
-            {% if closing_balance %}
             <tr>
                 <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Closing:</td>
-                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(closing_balance|float) }}</td>
+                <td style="padding: 3px 0; font-weight: 600;" id="continuityClosing">£{{ "{:,.2f}".format(closing_balance|float) if closing_balance else '—' }}</td>
             </tr>
-            {% endif %}
         </table>
         <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
             <strong>Possible reasons:</strong>
@@ -159,12 +161,16 @@
     <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
         Review every row below.
         <strong>Uncheck</strong> rows you do not want to import.
-        Edit the <em>Description</em> and <em>Reference</em> fields where needed.
+        Edit <em>Date</em>, <em>Description</em>, <em>Reference</em>, and <em>Amount</em> where needed.
+        Use the <em>Cleared</em> column to mark any uncleared items.
         Click <strong>Approve Import</strong> when ready — only checked rows will be saved.
     </p>
 
     <form method="POST" action="{{ url_for('office_import_approve') }}" id="approveForm">
         <input type="hidden" name="batch_id" value="{{ batch_id }}">
+        {% if balance_match == 'mismatch' %}
+        <input type="hidden" name="confirm_balance_mismatch" id="mismatchHidden" value="">
+        {% endif %}
 
         <div style="overflow-x: auto;">
             <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
@@ -179,35 +185,67 @@
                         <th style="padding: 8px 10px; text-align: right; white-space: nowrap;">Amount</th>
                         <th style="padding: 8px 10px; min-width: 200px;">Description</th>
                         <th style="padding: 8px 10px; min-width: 160px;">Reference</th>
-                        <th style="padding: 8px 10px; min-width: 140px;">Source</th>
+                        <th style="padding: 8px 10px; min-width: 130px;">Source</th>
+                        <th style="padding: 8px 10px; text-align: center; white-space: nowrap;"
+                            title="Cleared: counted in totals immediately. Uncleared: held as Pending until manually confirmed.">
+                            Cleared
+                        </th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for row in rows %}
                     {% set row_id = row.id | string %}
                     {% set is_dup = row.is_duplicate %}
-                    <tr class="import-row{% if is_dup %} import-row-dup{% endif %}"
+                    {% set is_bf  = row.is_balance_brought_forward %}
+                    <tr class="import-row{% if is_dup %} import-row-dup{% endif %}{% if is_bf %} bf-row{% endif %}"
                         data-row="{{ row_id }}"
-                        style="{% if is_dup %}background: rgba(234,179,8,0.08);{% endif %}">
+                        data-type="{{ row.transaction_type }}"
+                        data-bf="{{ 'true' if is_bf else 'false' }}"
+                        style="{% if is_dup %}background: rgba(234,179,8,0.08);{% endif %}{% if is_bf %}background: rgba(59,130,246,0.07); border-left: 3px solid rgba(59,130,246,0.4);{% endif %}">
 
                         <td style="text-align: center; padding: 6px;">
+                            {% if is_bf %}
+                            {# BF row is required for continuity — cannot be removed #}
+                            <input type="checkbox"
+                                   name="keep_{{ row_id }}"
+                                   value="on"
+                                   class="row-keep"
+                                   checked
+                                   disabled
+                                   title="Balance Brought Forward — required for continuity"
+                                   data-row="{{ row_id }}">
+                            <input type="hidden" name="keep_{{ row_id }}" value="on">
+                            {% else %}
                             <input type="checkbox"
                                    name="keep_{{ row_id }}"
                                    value="on"
                                    class="row-keep"
                                    checked
                                    data-row="{{ row_id }}">
+                            {% endif %}
                         </td>
 
-                        <td style="padding: 6px 10px; white-space: nowrap;">
-                            {{ row.transaction_date }}
+                        <td style="padding: 6px 6px; white-space: nowrap;">
+                            {% if is_bf %}
+                            <span style="font-size: 12px; color: var(--text-muted);">{{ row.transaction_date }}</span>
+                            <input type="hidden" name="date_{{ row_id }}" value="{{ row.transaction_date }}">
+                            {% else %}
+                            <input type="date"
+                                   name="date_{{ row_id }}"
+                                   value="{{ row.transaction_date }}"
+                                   class="row-input"
+                                   data-row="{{ row_id }}"
+                                   style="padding: 3px 6px; font-size: 12px;
+                                          border: 1px solid var(--border-subtle); border-radius: 4px;
+                                          background: var(--bg-elevated); color: var(--text-primary);">
+                            {% endif %}
                         </td>
 
                         <td style="padding: 6px 10px; white-space: nowrap;">
                             {% if row.transaction_type == 'Receipt' %}
                             <span class="status-badge" style="background: rgba(16,185,129,0.2);
                                 color: #059669; border: 1px solid rgba(16,185,129,0.4);">
-                                Receipt
+                                {% if is_bf %}Balance B/F{% else %}Receipt{% endif %}
                             </span>
                             {% else %}
                             <span class="status-badge" style="background: rgba(239,68,68,0.15);
@@ -226,10 +264,38 @@
                             {% endif %}
                         </td>
 
-                        <td style="padding: 6px 10px; text-align: right; white-space: nowrap;
-                                   font-variant-numeric: tabular-nums; font-weight: 600;
-                                   {% if row.transaction_type == 'Receipt' %}color: #059669;{% else %}color: #dc2626;{% endif %}">
-                            {% if row.transaction_type == 'Receipt' %}+{% else %}−{% endif %}£{{ "{:,.2f}".format(row.amount | float) }}
+                        <td style="padding: 6px 8px; text-align: right; white-space: nowrap;">
+                            {% if is_bf %}
+                            <span style="font-variant-numeric: tabular-nums; font-weight: 600;
+                                         color: #059669; font-size: 12px;">
+                                +£{{ "{:,.2f}".format(row.amount | float) }}
+                            </span>
+                            <input type="hidden" name="amount_{{ row_id }}" value="{{ row.amount }}">
+                            {% else %}
+                            <div style="display: flex; align-items: center; gap: 4px; justify-content: flex-end;">
+                                <span style="font-weight: 600; font-size: 12px;
+                                             {% if row.transaction_type == 'Receipt' %}color: #059669;{% else %}color: #dc2626;{% endif %}">
+                                    {% if row.transaction_type == 'Receipt' %}+{% else %}−{% endif %}
+                                </span>
+                                <span style="font-size: 12px; color: var(--text-muted);">£</span>
+                                <input type="number"
+                                       name="amount_{{ row_id }}"
+                                       value="{{ "{:.2f}".format(row.amount | float) }}"
+                                       min="0.01"
+                                       step="0.01"
+                                       class="row-input amount-input"
+                                       data-row="{{ row_id }}"
+                                       data-type="{{ row.transaction_type }}"
+                                       data-original="{{ "{:.2f}".format(row.amount | float) }}"
+                                       style="width: 90px; padding: 3px 6px; font-size: 12px;
+                                              font-variant-numeric: tabular-nums; font-weight: 600;
+                                              text-align: right;
+                                              border: 1px solid var(--border-subtle); border-radius: 4px;
+                                              background: var(--bg-elevated); color: var(--text-primary);
+                                              {% if row.transaction_type == 'Receipt' %}color: #059669;{% else %}color: #dc2626;{% endif %}"
+                                       oninput="validateAmount(this); recalculate();">
+                            </div>
+                            {% endif %}
                         </td>
 
                         <td style="padding: 6px 8px;">
@@ -240,9 +306,8 @@
                                    maxlength="500"
                                    class="row-input"
                                    data-row="{{ row_id }}"
-                                   style="width: 100%; padding: 4px 8px; font-size: 12px;
-                                          border: 1px solid var(--border-subtle); border-radius: 4px;
-                                          background: var(--bg-elevated); color: var(--text-primary);">
+                                   {% if is_bf %}readonly style="width: 100%; padding: 4px 8px; font-size: 12px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-elevated); color: var(--text-muted); cursor: default;"
+                                   {% else %}style="width: 100%; padding: 4px 8px; font-size: 12px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-elevated); color: var(--text-primary);"{% endif %}>
                         </td>
 
                         <td style="padding: 6px 8px;">
@@ -253,23 +318,51 @@
                                    maxlength="200"
                                    class="row-input"
                                    data-row="{{ row_id }}"
-                                   style="width: 100%; padding: 4px 8px; font-size: 12px;
-                                          border: 1px solid var(--border-subtle); border-radius: 4px;
-                                          background: var(--bg-elevated); color: var(--text-primary);">
+                                   {% if is_bf %}readonly style="width: 100%; padding: 4px 8px; font-size: 12px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-elevated); color: var(--text-muted); cursor: default;"
+                                   {% else %}style="width: 100%; padding: 4px 8px; font-size: 12px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-elevated); color: var(--text-primary);"{% endif %}>
                         </td>
 
                         <td style="padding: 6px 8px;">
+                            {% if is_bf %}
+                            <span style="font-size: 12px; color: var(--text-muted);">—</span>
+                            <input type="hidden" name="source_{{ row_id }}" value="Bank Transfer">
+                            {% else %}
                             <select name="source_{{ row_id }}"
-                                    class="row-input"
+                                    class="row-input source-select"
                                     data-row="{{ row_id }}"
                                     style="width: 100%; padding: 4px 8px; font-size: 12px;
                                            border: 1px solid var(--border-subtle); border-radius: 4px;
-                                           background: var(--bg-elevated); color: var(--text-primary);">
+                                           background: var(--bg-elevated); color: var(--text-primary);"
+                                    onchange="onSourceChange(this)">
                                 <option value="Bank Transfer" selected>Bank Transfer</option>
                                 <option value="Cash">Cash</option>
                                 <option value="Cheque">Cheque</option>
                                 <option value="Card">Card</option>
                             </select>
+                            {% endif %}
+                        </td>
+
+                        <td style="text-align: center; padding: 6px 10px;">
+                            {% if is_bf %}
+                            <span style="font-size: 12px; color: var(--text-muted);">—</span>
+                            {% else %}
+                            {# Hidden sentinel tells the server this column was rendered.
+                               Without it the server cannot distinguish "user unchecked"
+                               from "old/programmatic POST that never included the field". #}
+                            <input type="hidden" name="cleared_present_{{ row_id }}" value="1">
+                            <label style="display: inline-flex; align-items: center; gap: 5px;
+                                          cursor: pointer; font-size: 12px;">
+                                <input type="checkbox"
+                                       name="cleared_{{ row_id }}"
+                                       value="on"
+                                       class="cleared-check"
+                                       checked
+                                       data-row="{{ row_id }}"
+                                       style="cursor: pointer; width: 14px; height: 14px;"
+                                       onchange="onClearedChange(this)">
+                                <span class="cleared-label" style="color: #059669; font-size: 11px; font-weight: 600;">Cleared</span>
+                            </label>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -302,6 +395,9 @@
 .import-row td { transition: opacity 0.15s; }
 .import-row.row-unchecked td { opacity: 0.4; }
 .import-row.row-unchecked .row-input { pointer-events: none; }
+.bf-row td { font-style: italic; }
+.amount-input.amount-edited { border-color: #f59e0b !important; background: rgba(245,158,11,0.06) !important; }
+.amount-input.amount-invalid { border-color: #dc2626 !important; background: rgba(220,38,38,0.06) !important; }
 </style>
 
 {% endblock %}
@@ -309,39 +405,165 @@
 {% block extra_js %}
 <script>
 (function () {
-    var checkboxes = document.querySelectorAll('.row-keep');
-    var selectAll  = document.getElementById('selectAll');
-    var countEl    = document.getElementById('selectedCount');
-    var approveBtn = document.getElementById('approveBtn');
-    var mismatchCb = document.getElementById('confirmMismatch');
+    /* ── Constants injected from Flask ─────────────────────────── */
+    var OPENING_BALANCE = {{ (opening_balance | float) if opening_balance else 0 }};
+    var HAS_OPENING     = {{ 'true' if opening_balance else 'false' }};
+
+    /* ── Row registry ────────────────────────────────────────────── */
+    // Populated from the server-rendered rows; updated live as user edits.
+    var rowData = {};
+    {% for row in rows %}
+    rowData["{{ row.id }}"] = {
+        type:    "{{ row.transaction_type }}",
+        amount:  {{ row.amount | float }},
+        cleared: true,
+        kept:    true,
+        isBF:    {{ 'true' if row.is_balance_brought_forward else 'false' }}
+    };
+    {% endfor %}
+
+    /* ── Helpers ──────────────────────────────────────────────────── */
+    function fmtGBP(v) {
+        return '£' + Math.abs(v).toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+
+    /* ── Recalculate totals ───────────────────────────────────────── */
+    function recalculate() {
+        var receipts = 0, payments = 0, rCnt = 0, pCnt = 0;
+
+        Object.keys(rowData).forEach(function (id) {
+            var d = rowData[id];
+            if (!d.kept) return;
+            if (d.isBF)  return;  // BF row excluded from statement totals
+
+            // Get live amount from input (if visible)
+            var amtInput = document.querySelector('[name="amount_' + id + '"]');
+            var amt = amtInput ? (parseFloat(amtInput.value) || 0) : d.amount;
+            if (amt < 0) amt = 0;
+
+            if (d.type === 'Receipt') { receipts += amt; rCnt++; }
+            else                      { payments += amt; pCnt++; }
+        });
+
+        var net = receipts - payments;
+
+        // Update stat cards
+        var elR = document.getElementById('statReceipts');
+        var elP = document.getElementById('statPayments');
+        var elN = document.getElementById('statNet');
+        var elRC = document.getElementById('statReceiptCount');
+        var elPC = document.getElementById('statPaymentCount');
+        if (elR)  elR.textContent = fmtGBP(receipts);
+        if (elP)  elP.textContent = fmtGBP(payments);
+        if (elN) {
+            elN.textContent = (net >= 0 ? '+' : '−') + fmtGBP(net);
+            elN.style.color = net >= 0 ? '#059669' : '#dc2626';
+        }
+        if (elRC) elRC.textContent = rCnt + ' row(s)';
+        if (elPC) elPC.textContent = pCnt + ' row(s)';
+
+        // Update continuity closing balance
+        if (HAS_OPENING) {
+            var closing = OPENING_BALANCE + net;
+            var elC = document.getElementById('continuityClosing');
+            if (elC) elC.textContent = fmtGBP(closing);
+        }
+    }
+
+    /* ── Amount validation ────────────────────────────────────────── */
+    function validateAmount(input) {
+        var val = input.value.trim();
+        var num = parseFloat(val);
+        var rowId = input.getAttribute('data-row');
+        var original = parseFloat(input.getAttribute('data-original') || '0');
+
+        if (val === '' || isNaN(num) || num <= 0) {
+            input.classList.add('amount-invalid');
+            input.classList.remove('amount-edited');
+            // Reset to original if blank
+            if (val === '') {
+                input.value = original.toFixed(2);
+                input.classList.remove('amount-invalid');
+            }
+            return;
+        }
+
+        // Round to 2 dp on blur (validated on input event)
+        input.classList.remove('amount-invalid');
+        if (Math.abs(num - original) > 0.001) {
+            input.classList.add('amount-edited');
+        } else {
+            input.classList.remove('amount-edited');
+        }
+
+        // Update rowData
+        if (rowData[rowId]) rowData[rowId].amount = num;
+    }
+
+    /* ── Source change: Cheque disables Cleared checkbox ──────────── */
+    function onSourceChange(sel) {
+        var rowId  = sel.getAttribute('data-row');
+        var isCheque = (sel.value === 'Cheque');
+        var clearedCb = document.querySelector('[name="cleared_' + rowId + '"]');
+        var clearedLabel = clearedCb ? clearedCb.closest('label').querySelector('.cleared-label') : null;
+        if (clearedCb) {
+            if (isCheque) {
+                // Cheques are always Pending — visually indicate this
+                clearedCb.checked = false;
+                clearedCb.disabled = true;
+                if (clearedLabel) {
+                    clearedLabel.textContent = 'Pending';
+                    clearedLabel.style.color = '#e67e22';
+                }
+                if (rowData[rowId]) rowData[rowId].cleared = false;
+            } else {
+                clearedCb.disabled = false;
+                clearedCb.checked = rowData[rowId] ? rowData[rowId].cleared : true;
+                if (clearedLabel) {
+                    clearedLabel.textContent = clearedCb.checked ? 'Cleared' : 'Uncleared';
+                    clearedLabel.style.color = clearedCb.checked ? '#059669' : '#e67e22';
+                }
+            }
+        }
+        recalculate();
+    }
+
+    /* ── Cleared checkbox toggle ─────────────────────────────────── */
+    function onClearedChange(cb) {
+        var rowId = cb.getAttribute('data-row');
+        var label = cb.closest('label').querySelector('.cleared-label');
+        if (rowData[rowId]) rowData[rowId].cleared = cb.checked;
+        if (label) {
+            label.textContent = cb.checked ? 'Cleared' : 'Uncleared';
+            label.style.color = cb.checked ? '#059669' : '#e67e22';
+        }
+        // Note: cleared status does not affect statement closing balance calculation,
+        // but it is preserved for the approve route.
+    }
+
+    /* ── Mismatch confirmation ───────────────────────────────────── */
+    var mismatchCb   = document.getElementById('confirmMismatch');
+    var mismatchHidden = document.getElementById('mismatchHidden');
 
     function isMismatchBlocking() {
         return mismatchCb && !mismatchCb.checked;
     }
 
     function updateMismatchConfirmation() {
+        if (mismatchHidden) {
+            mismatchHidden.value = (mismatchCb && mismatchCb.checked) ? 'confirmed' : '';
+        }
         updateCount();
     }
 
-    function updateCount() {
-        var checked = document.querySelectorAll('.row-keep:checked').length;
-        var total   = checkboxes.length;
-        countEl.textContent = checked + ' of ' + total + ' row(s) selected';
-        var blocked = isMismatchBlocking();
-        approveBtn.disabled = (checked === 0) || blocked;
-        if (checked === 0) {
-            approveBtn.textContent = 'No rows selected';
-        } else if (blocked) {
-            approveBtn.textContent = '⚠ Confirm balance mismatch above to proceed';
-        } else {
-            approveBtn.textContent = '✓ Approve Import (' + checked + ' transaction' + (checked === 1 ? '' : 's') + ')';
-        }
-        selectAll.indeterminate = (checked > 0 && checked < total);
-        selectAll.checked = (checked === total);
-    }
-
-    // expose for inline onchange
+    // Expose for inline onchange attribute
     window.updateMismatchConfirmation = updateMismatchConfirmation;
+
+    /* ── Row keep/unkeep ─────────────────────────────────────────── */
+    var checkboxes = document.querySelectorAll('.row-keep:not([disabled])');
+    var selectAll  = document.getElementById('selectAll');
+    var countEl    = document.getElementById('selectedCount');
+    var approveBtn = document.getElementById('approveBtn');
 
     function setRowStyle(cb) {
         var rowId = cb.getAttribute('data-row');
@@ -353,6 +575,28 @@
                 tr.classList.add('row-unchecked');
             }
         }
+        if (rowData[rowId]) rowData[rowId].kept = cb.checked;
+    }
+
+    function updateCount() {
+        var allKeepCbs = document.querySelectorAll('.row-keep');
+        var checked    = document.querySelectorAll('.row-keep:checked').length;
+        var total      = allKeepCbs.length;
+        countEl.textContent = checked + ' of ' + total + ' row(s) selected';
+        var blocked = isMismatchBlocking();
+        approveBtn.disabled = (checked === 0) || blocked;
+        if (checked === 0) {
+            approveBtn.textContent = 'No rows selected';
+        } else if (blocked) {
+            approveBtn.textContent = '⚠ Confirm balance mismatch above to proceed';
+        } else {
+            approveBtn.textContent = '✓ Approve Import (' + checked + ' transaction' + (checked === 1 ? '' : 's') + ')';
+        }
+        if (selectAll) {
+            selectAll.indeterminate = (checked > 0 && checked < total);
+            selectAll.checked = (checked === total);
+        }
+        recalculate();
     }
 
     checkboxes.forEach(function (cb) {
@@ -372,7 +616,30 @@
         });
     }
 
-    // Confirm on approve
+    /* ── Round amount to 2dp on blur ────────────────────────────── */
+    document.querySelectorAll('.amount-input').forEach(function (inp) {
+        inp.addEventListener('blur', function () {
+            var v = parseFloat(inp.value);
+            if (!isNaN(v) && v > 0) {
+                inp.value = v.toFixed(2);
+                validateAmount(inp);
+                recalculate();
+            } else {
+                // Restore original if invalid
+                inp.value = parseFloat(inp.getAttribute('data-original') || '0').toFixed(2);
+                inp.classList.remove('amount-invalid', 'amount-edited');
+                recalculate();
+            }
+        });
+    });
+
+    /* ── Expose globals for inline handlers ─────────────────────── */
+    window.validateAmount = validateAmount;
+    window.recalculate    = recalculate;
+    window.onSourceChange = onSourceChange;
+    window.onClearedChange = onClearedChange;
+
+    /* ── Confirm on approve ──────────────────────────────────────── */
     var form = document.getElementById('approveForm');
     if (form && approveBtn) {
         form.addEventListener('submit', function (e) {
@@ -382,12 +649,31 @@
                 alert('No rows are selected. Please select at least one transaction or cancel the import.');
                 return;
             }
+            // Validate all amount inputs before submit
+            var invalid = false;
+            document.querySelectorAll('.amount-input').forEach(function (inp) {
+                var v = parseFloat(inp.value);
+                if (isNaN(v) || v <= 0) {
+                    inp.classList.add('amount-invalid');
+                    invalid = true;
+                }
+            });
+            if (invalid) {
+                e.preventDefault();
+                alert('One or more amounts are invalid. Please correct them before approving.');
+                return;
+            }
             approveBtn.disabled = true;
             approveBtn.textContent = 'Importing…';
         });
     }
 
+    /* ── Initial render ──────────────────────────────────────────── */
     updateCount();
+    // Initialize cleared labels
+    document.querySelectorAll('.cleared-check').forEach(function(cb) {
+        onClearedChange(cb);
+    });
 })();
 </script>
 {% endblock %}
