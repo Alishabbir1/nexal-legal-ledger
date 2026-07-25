@@ -14,6 +14,12 @@ Each returned row dict:
     transaction_type  str  'Receipt' or 'Payment'
     balance         Decimal or None  (running balance from statement, if present)
     row_number      int  (1-based source file row, for tracing)
+
+parse_office_statement() returns a ParseResult named-tuple:
+    rows             list of transaction dicts (balance-marker rows excluded)
+    opening_balance  Decimal | None  (from CSV opening-balance row or first balance col)
+    closing_balance  Decimal | None  (from CSV closing-balance row or last balance col)
+    error            str | None
 """
 
 import csv
@@ -21,7 +27,15 @@ import io
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
+
+
+class ParseResult(NamedTuple):
+    rows: List[Dict]
+    opening_balance: Optional[Decimal]
+    closing_balance: Optional[Decimal]
+    error: Optional[str]
+
 
 # ---------------------------------------------------------------------------
 # Column-name normalisation helpers
@@ -140,32 +154,70 @@ BALANCE_COLS = {
 }
 
 # ---------------------------------------------------------------------------
+# Opening / closing balance marker detection
+# ---------------------------------------------------------------------------
+
+# Normalised description fragments that identify an opening-balance row.
+_OPENING_BALANCE_NORMS = frozenset({
+    _norm(s) for s in (
+        'Opening Balance', 'Opening Bal', 'Balance Brought Forward',
+        'Balance B/F', 'Balance BF', 'Brought Forward', 'Previous Balance',
+        'Starting Balance', 'Balance Forward', 'Prior Balance',
+        'Opening Balance (Previous Statement)', 'Balance at start',
+    )
+})
+
+# Normalised description fragments that identify a closing-balance row.
+_CLOSING_BALANCE_NORMS = frozenset({
+    _norm(s) for s in (
+        'Closing Balance', 'Closing Bal', 'Balance Carried Forward',
+        'Balance C/F', 'Balance CF', 'Carried Forward', 'Ending Balance',
+        'Final Balance', 'Balance at end', 'Closing Balance (This Statement)',
+    )
+})
+
+
+def _is_opening_balance_row(description: str) -> bool:
+    return _norm(description) in _OPENING_BALANCE_NORMS
+
+
+def _is_closing_balance_row(description: str) -> bool:
+    return _norm(description) in _CLOSING_BALANCE_NORMS
+
+
+# ---------------------------------------------------------------------------
 # CSV parser
 # ---------------------------------------------------------------------------
 
-def parse_office_csv(content: bytes) -> Tuple[List[Dict], Optional[str]]:
+def parse_office_csv(content: bytes) -> ParseResult:
     """
     Parse a bank-statement CSV file for Office Account import.
 
-    Returns (rows, error_message).
-    On success: rows is a non-empty list of dicts, error_message is None.
-    On failure: rows is [], error_message describes the problem.
+    Returns a ParseResult(rows, opening_balance, closing_balance, error).
+    On success: rows is a non-empty list of dicts, error is None.
+    On failure: rows is [], error describes the problem.
+
+    opening_balance and closing_balance are extracted from:
+      1. Dedicated balance-marker rows (e.g. "Opening Balance") which are
+         removed from the transaction list.
+      2. If no marker rows, inferred from the Balance column of the first
+         and last transaction rows.
     """
     # Decode with BOM stripping
     try:
         text = content.decode('utf-8-sig', errors='replace')
     except Exception as e:
-        return [], f"Could not decode file: {e}"
+        return ParseResult([], None, None, f"Could not decode file: {e}")
 
     # Parse CSV
     try:
         reader = csv.DictReader(io.StringIO(text))
         raw_rows = list(reader)
     except Exception as e:
-        return [], f"Could not parse CSV structure: {e}"
+        return ParseResult([], None, None, f"Could not parse CSV structure: {e}")
 
     if not raw_rows:
-        return [], "The file is empty or contains no data rows."
+        return ParseResult([], None, None, "The file is empty or contains no data rows.")
 
     # Build normalised header map
     h = {_norm(col): col for col in raw_rows[0].keys()}
@@ -174,11 +226,11 @@ def parse_office_csv(content: bytes) -> Tuple[List[Dict], Optional[str]]:
     date_col = _find_col(h, DATE_COLS)
     if date_col is None:
         found = ', '.join(raw_rows[0].keys()) or '(none)'
-        return [], (
+        return ParseResult([], None, None, (
             "Required column 'Date' not found. "
             f"Columns present: {found}. "
             "Expected names like: Date, Transaction Date, Value Date."
-        )
+        ))
 
     # Locate amount columns
     debit_col = _find_col(h, DEBIT_COLS)
@@ -187,11 +239,11 @@ def parse_office_csv(content: bytes) -> Tuple[List[Dict], Optional[str]]:
 
     if not debit_col and not credit_col and not amount_col:
         found = ', '.join(raw_rows[0].keys()) or '(none)'
-        return [], (
+        return ParseResult([], None, None, (
             "Required amount column not found. "
             f"Columns present: {found}. "
             "Expected names like: Amount, Debit, Credit, Money In, Money Out."
-        )
+        ))
 
     desc_col = _find_col(h, DESC_COLS)
     ref_col = _find_col(h, REF_COLS)
@@ -199,42 +251,75 @@ def parse_office_csv(content: bytes) -> Tuple[List[Dict], Optional[str]]:
 
     rows: List[Dict] = []
     skipped = 0
+    opening_balance: Optional[Decimal] = None
+    closing_balance: Optional[Decimal] = None
 
     for i, raw in enumerate(raw_rows, start=2):  # start=2: row 1 is header
+        description = (raw.get(desc_col) or '').strip() if desc_col else ''
+        balance_val = _parse_amount(raw.get(bal_col)) if bal_col else None
+
+        # --- Opening balance marker row ---
+        if _is_opening_balance_row(description):
+            # Prefer the balance column; fall back to any positive amount column
+            if balance_val is not None:
+                opening_balance = abs(balance_val)
+            else:
+                # Try to read from amount columns
+                if amount_col:
+                    v = _parse_amount(raw.get(amount_col, ''))
+                    if v is not None:
+                        opening_balance = abs(v)
+                elif credit_col:
+                    v = _parse_amount(raw.get(credit_col, ''))
+                    if v is not None:
+                        opening_balance = abs(v)
+            continue  # do not emit as a transaction
+
+        # --- Closing balance marker row ---
+        if _is_closing_balance_row(description):
+            if balance_val is not None:
+                closing_balance = abs(balance_val)
+            else:
+                if amount_col:
+                    v = _parse_amount(raw.get(amount_col, ''))
+                    if v is not None:
+                        closing_balance = abs(v)
+                elif credit_col:
+                    v = _parse_amount(raw.get(credit_col, ''))
+                    if v is not None:
+                        closing_balance = abs(v)
+            continue  # do not emit as a transaction
+
+        # --- Regular transaction row ---
         date_val = _parse_date(raw.get(date_col, ''))
         if date_val is None:
             skipped += 1
             continue
 
-        description = (raw.get(desc_col) or '').strip() if desc_col else ''
         reference = (raw.get(ref_col) or '').strip() if ref_col else ''
-        balance = _parse_amount(raw.get(bal_col)) if bal_col else None
-
-        # Fallback reference
         ref_fallback = reference or description[:50] or 'Import'
 
         if debit_col and credit_col:
-            # Separate debit / credit columns
             debit_val = _parse_amount(raw.get(debit_col, ''))
             credit_val = _parse_amount(raw.get(credit_col, ''))
             if debit_val is not None and debit_val != Decimal('0'):
                 rows.append(_make_row(date_val, description, ref_fallback,
-                                      abs(debit_val), 'Payment', balance, i))
+                                      abs(debit_val), 'Payment', balance_val, i))
             if credit_val is not None and credit_val != Decimal('0'):
                 rows.append(_make_row(date_val, description, ref_fallback,
-                                      abs(credit_val), 'Receipt', balance, i))
+                                      abs(credit_val), 'Receipt', balance_val, i))
 
         elif debit_col:
             amt = _parse_amount(raw.get(debit_col, ''))
             if amt is not None and amt != Decimal('0'):
                 rows.append(_make_row(date_val, description, ref_fallback,
-                                      abs(amt), 'Payment', balance, i))
+                                      abs(amt), 'Payment', balance_val, i))
 
         elif credit_col:
             amt = _parse_amount(raw.get(credit_col, ''))
             if amt is not None and amt != Decimal('0'):
                 rows.append(_make_row(date_val, description, ref_fallback,
-                                      abs(amt), 'Receipt', balance, i))
+                                      abs(amt), 'Receipt', balance_val, i))
 
         else:
             # Single signed amount column
@@ -242,15 +327,34 @@ def parse_office_csv(content: bytes) -> Tuple[List[Dict], Optional[str]]:
             if amt is not None and amt != Decimal('0'):
                 t_type = 'Payment' if amt < Decimal('0') else 'Receipt'
                 rows.append(_make_row(date_val, description, ref_fallback,
-                                      abs(amt), t_type, balance, i))
+                                      abs(amt), t_type, balance_val, i))
 
     if not rows:
         msg = "No valid transactions found in the file."
         if skipped:
             msg += f" ({skipped} row(s) had unparseable dates and were skipped.)"
-        return [], msg
+        return ParseResult([], opening_balance, closing_balance, msg)
 
-    return rows, None
+    # If no explicit balance-marker rows, infer from the Balance column
+    if bal_col:
+        if opening_balance is None and rows:
+            # Infer: first transaction's balance minus its signed amount
+            first = rows[0]
+            first_bal = first.get('balance')
+            if first_bal is not None:
+                if first['transaction_type'] == 'Receipt':
+                    opening_balance = first_bal - first['amount']
+                else:
+                    opening_balance = first_bal + first['amount']
+                if opening_balance < Decimal('0'):
+                    opening_balance = None  # inference gave nonsense, discard
+
+        if closing_balance is None and rows:
+            last_bal = rows[-1].get('balance')
+            if last_bal is not None:
+                closing_balance = last_bal
+
+    return ParseResult(rows, opening_balance, closing_balance, None)
 
 
 def _make_row(date: str, description: str, reference: str,
@@ -274,10 +378,10 @@ def _make_row(date: str, description: str, reference: str,
 SUPPORTED_EXTENSIONS = {'csv'}
 
 
-def parse_office_statement(content: bytes, filename: str) -> Tuple[List[Dict], Optional[str]]:
+def parse_office_statement(content: bytes, filename: str) -> ParseResult:
     """
     Parse a bank statement file for Office Account import.
-    Returns (rows, error_message).
+    Returns ParseResult(rows, opening_balance, closing_balance, error).
 
     Phase 1 supports CSV only.
     To add OFX: add `elif ext == 'ofx': return parse_office_ofx(content)` below.
@@ -285,8 +389,8 @@ def parse_office_statement(content: bytes, filename: str) -> Tuple[List[Dict], O
     ext = (filename.rsplit('.', 1)[-1] if '.' in filename else '').lower().strip()
     if ext == 'csv':
         return parse_office_csv(content)
-    return [], (
+    return ParseResult([], None, None, (
         f"Unsupported file format '.{ext}'. "
         f"Please upload a CSV file (.csv). "
         "OFX and MT940 support is planned for a future release."
-    )
+    ))

@@ -56,6 +56,69 @@
     </div>
     {% endif %}
 
+    {# ── Opening Balance Continuity Check ─────────────────────────── #}
+    {% if balance_match == 'match' %}
+    <div style="display: flex; align-items: flex-start; gap: 10px;
+                background: rgba(5,150,105,0.10); border: 1px solid rgba(5,150,105,0.40);
+                border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px;">
+        <span style="font-size: 16px; line-height: 1;">✅</span>
+        <div>
+            <strong style="color: #059669;">Opening Balance matches.</strong>
+            The opening balance in this statement
+            (£{{ "{:,.2f}".format(opening_balance|float) }})
+            matches the previous Office Account closing balance
+            (£{{ "{:,.2f}".format(ledger_balance_before|float) }}).
+        </div>
+    </div>
+    {% elif balance_match == 'first_import' %}
+    <div style="display: flex; align-items: flex-start; gap: 10px;
+                background: rgba(59,130,246,0.10); border: 1px solid rgba(59,130,246,0.35);
+                border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px;">
+        <span style="font-size: 16px; line-height: 1;">ℹ️</span>
+        <div>
+            <strong style="color: #3b82f6;">First Import.</strong>
+            No previous Office Account transactions exist before this statement period.
+            The opening balance (£{{ "{:,.2f}".format(opening_balance|float) }})
+            will be treated as the starting balance.
+        </div>
+    </div>
+    {% elif balance_match == 'mismatch' %}
+    <div id="balanceMismatchBanner"
+         style="background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.40);
+                border-radius: 8px; padding: 14px 16px; margin-bottom: 18px; font-size: 13px;">
+        <div style="display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px;">
+            <span style="font-size: 16px; line-height: 1;">⚠️</span>
+            <div>
+                <strong style="color: #dc2626;">Opening Balance Mismatch.</strong>
+                The opening balance in this statement
+                <strong>(£{{ "{:,.2f}".format(opening_balance|float) }})</strong>
+                does not match the previous Office Account closing balance
+                <strong>(£{{ "{:,.2f}".format(ledger_balance_before|float) }})</strong>.
+                <br><br>
+                <span style="color: var(--text-secondary);">Possible reasons:</span>
+                <ul style="margin: 6px 0 0 18px; color: var(--text-secondary); line-height: 1.7;">
+                    <li>Missing bank statement(s) — a month may not have been imported yet</li>
+                    <li>Statements imported out of order</li>
+                    <li>Manual adjustments were made to the Office Account</li>
+                    <li>Incorrect or partially exported CSV file</li>
+                </ul>
+            </div>
+        </div>
+        <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+                      border-top: 1px solid rgba(220,38,38,0.25); padding-top: 10px;">
+            <input type="checkbox" id="confirmMismatch" name="confirm_balance_mismatch"
+                   value="confirmed"
+                   style="margin-top: 2px; flex-shrink: 0; cursor: pointer;"
+                   onchange="updateMismatchConfirmation();">
+            <span style="color: #dc2626; font-size: 13px;">
+                I understand the opening balance does not match.
+                I wish to proceed with this import anyway.
+            </span>
+        </label>
+    </div>
+    {% endif %}
+    {# ────────────────────────────────────────────────────────────── #}
+
     <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
         Review every row below.
         <strong>Uncheck</strong> rows you do not want to import.
@@ -213,20 +276,35 @@
     var selectAll  = document.getElementById('selectAll');
     var countEl    = document.getElementById('selectedCount');
     var approveBtn = document.getElementById('approveBtn');
+    var mismatchCb = document.getElementById('confirmMismatch');
+
+    function isMismatchBlocking() {
+        return mismatchCb && !mismatchCb.checked;
+    }
+
+    function updateMismatchConfirmation() {
+        updateCount();
+    }
 
     function updateCount() {
         var checked = document.querySelectorAll('.row-keep:checked').length;
         var total   = checkboxes.length;
         countEl.textContent = checked + ' of ' + total + ' row(s) selected';
-        approveBtn.disabled = (checked === 0);
+        var blocked = isMismatchBlocking();
+        approveBtn.disabled = (checked === 0) || blocked;
         if (checked === 0) {
             approveBtn.textContent = 'No rows selected';
+        } else if (blocked) {
+            approveBtn.textContent = '⚠ Confirm balance mismatch above to proceed';
         } else {
             approveBtn.textContent = '✓ Approve Import (' + checked + ' transaction' + (checked === 1 ? '' : 's') + ')';
         }
         selectAll.indeterminate = (checked > 0 && checked < total);
         selectAll.checked = (checked === total);
     }
+
+    // expose for inline onchange
+    window.updateMismatchConfirmation = updateMismatchConfirmation;
 
     function setRowStyle(cb) {
         var rowId = cb.getAttribute('data-row');

@@ -1319,13 +1319,30 @@ def office_import_statement():
             return redirect(url_for('office_import_statement'))
 
         from lib.office_import import parse_office_statement
-        rows, parse_error = parse_office_statement(content, filename)
-        if parse_error:
-            flash(parse_error, 'error')
+        result = parse_office_statement(content, filename)
+        if result.error:
+            flash(result.error, 'error')
             return redirect(url_for('office_import_statement'))
 
+        rows = result.rows
         stmt_start = request.form.get('statement_start') or None
         stmt_end = request.form.get('statement_end') or None
+
+        # --- Opening balance continuity check ---
+        opening_balance = result.opening_balance
+        ledger_balance_before: Optional[Decimal] = None
+        balance_match: str = 'no_opening_balance'
+
+        if opening_balance is not None:
+            check_date = stmt_start or (rows[0]['date'] if rows else None)
+            if check_date:
+                ledger_balance_before = db.get_office_closing_balance_before_date(check_date)
+                if ledger_balance_before is None:
+                    balance_match = 'first_import'
+                elif abs(ledger_balance_before - opening_balance) < Decimal('0.01'):
+                    balance_match = 'match'
+                else:
+                    balance_match = 'mismatch'
 
         # Duplicate detection
         rows = _flag_import_duplicates(rows)
@@ -1334,7 +1351,10 @@ def office_import_statement():
         import uuid as _uuid
         batch_id = str(_uuid.uuid4())
         db.create_office_import_batch(
-            batch_id, filename, stmt_start, stmt_end, rows, current_username()
+            batch_id, filename, stmt_start, stmt_end, rows, current_username(),
+            opening_balance=opening_balance,
+            ledger_balance_before=ledger_balance_before,
+            balance_match=balance_match,
         )
 
         dup_count = sum(1 for r in rows if r.get('is_duplicate'))
@@ -1385,6 +1405,9 @@ def office_import_review():
         receipt_total=receipt_total,
         payment_total=payment_total,
         dup_count=dup_count,
+        balance_match=batch_meta.get('balance_match') if batch_meta else None,
+        opening_balance=batch_meta.get('opening_balance') if batch_meta else None,
+        ledger_balance_before=batch_meta.get('ledger_balance_before') if batch_meta else None,
     )
 
 
@@ -1403,6 +1426,16 @@ def office_import_approve():
     if not rows:
         flash('Import session not found. Please upload again.', 'error')
         return redirect(url_for('office_import_statement'))
+
+    # If opening balance is mismatched, require explicit confirmation
+    if batch_meta and batch_meta.get('balance_match') == 'mismatch':
+        if request.form.get('confirm_balance_mismatch') != 'confirmed':
+            flash(
+                'The opening balance does not match. '
+                'Please tick the confirmation box on the review screen to proceed.',
+                'error',
+            )
+            return redirect(url_for('office_import_review', batch=batch_id))
 
     # Collect which rows the user kept and their (possibly edited) values
     kept = []

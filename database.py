@@ -480,13 +480,20 @@ class Database:
                 source TEXT NOT NULL DEFAULT 'Bank Transfer',
                 is_duplicate INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_by TEXT NOT NULL DEFAULT 'System'
+                created_by TEXT NOT NULL DEFAULT 'System',
+                opening_balance TEXT,
+                ledger_balance_before TEXT,
+                balance_match TEXT
             )
         """)
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_ois_batch "
             "ON office_import_staging(batch_id)"
         )
+        # Migrate existing office_import_staging tables (add balance columns if absent)
+        self._ensure_column(cursor, 'office_import_staging', 'opening_balance', "TEXT")
+        self._ensure_column(cursor, 'office_import_staging', 'ledger_balance_before', "TEXT")
+        self._ensure_column(cursor, 'office_import_staging', 'balance_match', "TEXT")
         conn.commit()
         if not self.skip_user_seed:
             self._seed_default_users(cursor)
@@ -2788,22 +2795,32 @@ class Database:
         statement_end,
         rows,
         created_by: str = 'System',
+        opening_balance=None,
+        ledger_balance_before=None,
+        balance_match: str = None,
     ) -> None:
         """
         Persist parsed import rows into the staging table.
         Nothing is written to office_cashbook until import_approve_batch is called.
+
+        opening_balance:      Decimal|None — opening balance from the CSV file.
+        ledger_balance_before: Decimal|None — DB balance immediately before statement start.
+        balance_match:        'first_import'|'match'|'mismatch'|'no_opening_balance'
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            ob_str = str(opening_balance) if opening_balance is not None else None
+            lb_str = str(ledger_balance_before) if ledger_balance_before is not None else None
             for row in rows:
                 cursor.execute(
                     """
                     INSERT INTO office_import_staging
                     (batch_id, filename, statement_start, statement_end, row_number,
                      transaction_date, description, reference, amount, transaction_type,
-                     source, is_duplicate, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     source, is_duplicate, created_by,
+                     opening_balance, ledger_balance_before, balance_match)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -2819,6 +2836,9 @@ class Database:
                         'Bank Transfer',
                         1 if row.get('is_duplicate') else 0,
                         created_by,
+                        ob_str,
+                        lb_str,
+                        balance_match,
                     ),
                 )
             conn.commit()
@@ -2850,8 +2870,59 @@ class Database:
             'filename': first.get('filename', ''),
             'statement_start': first.get('statement_start', ''),
             'statement_end': first.get('statement_end', ''),
+            'opening_balance': first.get('opening_balance'),
+            'ledger_balance_before': first.get('ledger_balance_before'),
+            'balance_match': first.get('balance_match'),
         }
         return rows, batch_meta
+
+    def get_office_closing_balance_before_date(self, date_str: str) -> Optional[Decimal]:
+        """
+        Return the Office Account balance as of the day before date_str,
+        or None if there are no cleared transactions before that date.
+
+        Used for opening-balance continuity checks during CSV import.
+        """
+        from datetime import datetime, timedelta
+        try:
+            day_before = (
+                datetime.strptime(date_str, '%Y-%m-%d') - timedelta(days=1)
+            ).strftime('%Y-%m-%d')
+        except (ValueError, TypeError):
+            return None
+
+        # Check whether any cleared entry exists before this date
+        conn = self.get_connection()
+        try:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT transaction_date FROM office_cashbook
+                    WHERE status = 'Cleared'
+                      AND COALESCE(is_deleted, 0) = 0
+                      AND transaction_date <= ?
+                    UNION ALL
+                    SELECT transaction_date FROM cashbook_transactions
+                    WHERE linked_ledger_id IS NULL
+                      AND status = 'Cleared'
+                      AND COALESCE(is_deleted, 0) = 0
+                      AND transaction_date <= ?
+                    UNION ALL
+                    SELECT transaction_date FROM office_fee_transfers
+                    WHERE COALESCE(is_deleted, 0) = 0
+                      AND transaction_date <= ?
+                )
+                """,
+                (day_before, day_before, day_before),
+            )
+            count = c.fetchone()[0]
+        finally:
+            conn.close()
+
+        if count == 0:
+            return None  # no history before this date → first import
+        return self.get_office_balance(as_of_date=day_before)
 
     def delete_office_import_staging(self, batch_id: str) -> None:
         """Delete all staging rows for a batch (cancel or post-approval cleanup)."""
