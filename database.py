@@ -461,6 +461,32 @@ class Database:
         self._backfill_ledger_reversal_depths(cursor)
         self._sync_cashbook_reversal_depth_from_ledger(cursor)
         self._migrate_reconciliation_versioning(cursor)
+        # Office Account bank statement import (Phase 1)
+        self._ensure_column(cursor, 'office_cashbook', 'import_batch_id', "TEXT")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS office_import_staging (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL,
+                filename TEXT,
+                statement_start DATE,
+                statement_end DATE,
+                row_number INTEGER,
+                transaction_date TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                reference TEXT NOT NULL DEFAULT '',
+                amount TEXT NOT NULL,
+                transaction_type TEXT NOT NULL
+                    CHECK(transaction_type IN ('Receipt', 'Payment')),
+                source TEXT NOT NULL DEFAULT 'Bank Transfer',
+                is_duplicate INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT NOT NULL DEFAULT 'System'
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ois_batch "
+            "ON office_import_staging(batch_id)"
+        )
         conn.commit()
         if not self.skip_user_seed:
             self._seed_default_users(cursor)
@@ -2686,7 +2712,8 @@ class Database:
 
     def create_office_transaction(self, transaction_date: str, amount: Decimal,
                                   transaction_type: str, reference: str, source: str,
-                                  description: str = None, created_by: str = 'System') -> int:
+                                  description: str = None, created_by: str = 'System',
+                                  import_batch_id: str = None) -> int:
         """
         Create office-only transaction. NEVER touches client ledger or cashbook_transactions.
         client_id and matter_id are implicitly NULL (office account only).
@@ -2709,10 +2736,10 @@ class Database:
                 cursor.execute("""
                     INSERT INTO office_cashbook
                     (transaction_id, transaction_date, amount, transaction_type, reference, source,
-                     description, status, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     description, status, created_by, import_batch_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (txn_id, transaction_date, str(amount), transaction_type, reference,
-                      source, description, status, created_by))
+                      source, description, status, created_by, import_batch_id))
                 row_id = cursor.lastrowid
                 if source == 'Cheque' and status == 'Pending':
                     clearance_days = int(self.get_config('cheque_clearance_days', '5'))
@@ -2742,6 +2769,122 @@ class Database:
             finally:
                 conn.close()
         raise ValueError(f"Database busy after {DB_WRITE_RETRIES} retries: {last_err}")
+
+    # ------------------------------------------------------------------
+    # Office Account bank statement import — staging methods
+    # These methods only touch office_import_staging, never client tables.
+    # ------------------------------------------------------------------
+
+    def create_office_import_batch(
+        self,
+        batch_id: str,
+        filename: str,
+        statement_start,
+        statement_end,
+        rows,
+        created_by: str = 'System',
+    ) -> None:
+        """
+        Persist parsed import rows into the staging table.
+        Nothing is written to office_cashbook until import_approve_batch is called.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            for row in rows:
+                cursor.execute(
+                    """
+                    INSERT INTO office_import_staging
+                    (batch_id, filename, statement_start, statement_end, row_number,
+                     transaction_date, description, reference, amount, transaction_type,
+                     source, is_duplicate, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        batch_id,
+                        filename or '',
+                        statement_start or '',
+                        statement_end or '',
+                        row.get('row_number', 0),
+                        row['date'],
+                        row.get('description', ''),
+                        row.get('reference', ''),
+                        str(row['amount']),
+                        row['transaction_type'],
+                        'Bank Transfer',
+                        1 if row.get('is_duplicate') else 0,
+                        created_by,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_office_import_staging(self, batch_id: str):
+        """
+        Return (rows, batch_meta) for a staging batch.
+        rows: list of dicts from office_import_staging
+        batch_meta: dict with filename/statement_start/statement_end, or None
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM office_import_staging WHERE batch_id = ? ORDER BY id",
+                (batch_id,),
+            )
+            raw = cursor.fetchall()
+        finally:
+            conn.close()
+        if not raw:
+            return [], None
+        rows = [dict(r) for r in raw]
+        first = rows[0]
+        batch_meta = {
+            'batch_id': batch_id,
+            'filename': first.get('filename', ''),
+            'statement_start': first.get('statement_start', ''),
+            'statement_end': first.get('statement_end', ''),
+        }
+        return rows, batch_meta
+
+    def delete_office_import_staging(self, batch_id: str) -> None:
+        """Delete all staging rows for a batch (cancel or post-approval cleanup)."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM office_import_staging WHERE batch_id = ?",
+                (batch_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def office_cashbook_duplicate_exists(
+        self, transaction_date: str, amount: str, transaction_type: str
+    ) -> bool:
+        """
+        Return True if an active office_cashbook record with matching
+        date + amount + type already exists (potential duplicate import guard).
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM office_cashbook
+                WHERE transaction_date = ?
+                  AND amount = ?
+                  AND transaction_type = ?
+                  AND COALESCE(is_deleted, 0) = 0
+                  AND status != 'Declined'
+                """,
+                (transaction_date, str(amount), transaction_type),
+            )
+            return cursor.fetchone()[0] > 0
+        finally:
+            conn.close()
 
     def update_office_cashbook_status(self, office_cashbook_id: int, new_status: str, 
                                       reason: str = None, changed_by: str = 'System'):

@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block page_title %}Upload Bank Statement{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width: 680px;">
+    <h2 style="margin-bottom: 6px;">Upload Office Account Bank Statement</h2>
+    <p style="margin: 0 0 24px; color: var(--text-muted); font-size: 14px;">
+        Import transactions from a bank statement CSV file into the Office Account.
+        Nothing is saved until you review and approve the import.
+    </p>
+
+    <form method="POST"
+          action="{{ url_for('office_import_statement') }}"
+          enctype="multipart/form-data"
+          id="importForm">
+
+        <!-- File upload -->
+        <div class="form-group" style="margin-bottom: 22px;">
+            <label for="statement_file" style="font-weight: 600;">
+                Statement File <span style="color: var(--danger);">*</span>
+            </label>
+            <input type="file"
+                   id="statement_file"
+                   name="statement_file"
+                   accept=".csv"
+                   required
+                   style="display: block; margin-top: 6px; width: 100%; padding: 8px 10px;
+                          border: 1px solid var(--border-subtle); border-radius: 6px;
+                          background: var(--bg-elevated); color: var(--text-primary);
+                          font-size: 13px; cursor: pointer;">
+            <small style="display: block; margin-top: 6px; color: var(--text-muted);">
+                Supported format: <strong>CSV (.csv)</strong>.
+                OFX and MT940 support is planned for a future release.<br>
+                The file must contain at minimum a <em>Date</em> column and an
+                <em>Amount</em>, <em>Debit</em>, or <em>Credit</em> column.
+            </small>
+        </div>
+
+        <!-- Statement date range (optional) -->
+        <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 22px;">
+            <div class="form-group" style="margin: 0; flex: 1; min-width: 180px;">
+                <label for="statement_start">Statement Start Date</label>
+                <input type="date"
+                       id="statement_start"
+                       name="statement_start"
+                       value="{{ today }}"
+                       style="margin-top: 4px;">
+                <small style="color: var(--text-muted);">Optional — for labelling only</small>
+            </div>
+            <div class="form-group" style="margin: 0; flex: 1; min-width: 180px;">
+                <label for="statement_end">Statement End Date</label>
+                <input type="date"
+                       id="statement_end"
+                       name="statement_end"
+                       value="{{ today }}"
+                       style="margin-top: 4px;">
+                <small style="color: var(--text-muted);">Optional — for labelling only</small>
+            </div>
+        </div>
+
+        <!-- Supported CSV formats guidance -->
+        <details style="margin-bottom: 24px; border: 1px solid var(--border-subtle);
+                        border-radius: 6px; padding: 12px 16px; background: var(--bg-elevated);">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;
+                            color: var(--text-primary);">
+                Supported CSV formats &amp; column names
+            </summary>
+            <div style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
+                <p style="margin: 0 0 8px;">
+                    The importer recognises most UK bank CSV export formats automatically.
+                </p>
+                <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                    <thead>
+                        <tr style="text-align: left; border-bottom: 1px solid var(--border-subtle);">
+                            <th style="padding: 6px 8px;">Column type</th>
+                            <th style="padding: 6px 8px;">Accepted names</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding: 6px 8px; font-weight: 600;">Date <span style="color: var(--danger);">*</span></td>
+                            <td style="padding: 6px 8px; color: var(--text-muted);">Date, Transaction Date, Value Date, Posted Date, Booking Date</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 8px; font-weight: 600;">Amount <span style="color: var(--danger);">*</span></td>
+                            <td style="padding: 6px 8px; color: var(--text-muted);">
+                                Single column: Amount, Value, Sum<br>
+                                Separate: Debit / Credit, Money Out / Money In, Paid Out / Paid In, Withdrawal / Deposit
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 8px;">Description</td>
+                            <td style="padding: 6px 8px; color: var(--text-muted);">Description, Narrative, Details, Particulars, Memo, Payee, Counter Party</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 8px;">Reference</td>
+                            <td style="padding: 6px 8px; color: var(--text-muted);">Reference, Ref, Payment Reference, Cheque Number</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 8px;">Balance</td>
+                            <td style="padding: 6px 8px; color: var(--text-muted);">Balance, Running Balance, Account Balance, Closing Balance</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p style="margin: 10px 0 0; font-size: 11px; color: var(--text-muted);">
+                    Date formats accepted: DD/MM/YYYY, YYYY-MM-DD, DD-MM-YYYY, DD.MM.YYYY, DD MMM YYYY.
+                </p>
+            </div>
+        </details>
+
+        <div style="display: flex; gap: 12px; align-items: center;">
+            <button type="submit" class="btn" id="submitBtn">
+                Upload &amp; Preview Import
+            </button>
+            <a href="{{ url_for('office_account') }}" class="btn btn-secondary">
+                Cancel
+            </a>
+        </div>
+    </form>
+</div>
+
+{% block extra_js %}
+<script>
+(function () {
+    var form = document.getElementById('importForm');
+    var btn  = document.getElementById('submitBtn');
+    if (form && btn) {
+        form.addEventListener('submit', function () {
+            btn.disabled = true;
+            btn.textContent = 'Parsing file…';
+        });
+    }
+})();
+</script>
+{% endblock %}
+{% endblock %}

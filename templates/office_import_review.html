@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block page_title %}Review Bank Statement Import{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start;
+                flex-wrap: wrap; gap: 12px; margin-bottom: 6px;">
+        <div>
+            <h2 style="margin: 0 0 4px;">Review Import — {{ batch_meta.filename }}</h2>
+            <p style="margin: 0; color: var(--text-muted); font-size: 13px;">
+                {% if batch_meta.statement_start or batch_meta.statement_end %}
+                Statement period:
+                {{ batch_meta.statement_start or '—' }} to {{ batch_meta.statement_end or '—' }}
+                &nbsp;·&nbsp;
+                {% endif %}
+                {{ rows|length }} transaction(s) found
+            </p>
+        </div>
+        <form method="POST" action="{{ url_for('office_import_cancel') }}" style="margin: 0;">
+            <input type="hidden" name="batch_id" value="{{ batch_id }}">
+            <button type="submit" class="btn btn-secondary"
+                    onclick="return confirm('Cancel this import? All staged rows will be discarded.');">
+                ✕ Cancel Import
+            </button>
+        </form>
+    </div>
+
+    <!-- Summary stats -->
+    <div class="stat-grid" style="margin: 20px 0;">
+        <div class="stat-card">
+            <div class="stat-label">Total Receipts</div>
+            <div class="stat-value success">£{{ "{:,.2f}".format(receipt_total) }}</div>
+            <div class="stat-sub">{{ rows|selectattr('transaction_type','eq','Receipt')|list|length }} row(s)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Total Payments</div>
+            <div class="stat-value danger">£{{ "{:,.2f}".format(payment_total) }}</div>
+            <div class="stat-sub">{{ rows|selectattr('transaction_type','eq','Payment')|list|length }} row(s)</div>
+        </div>
+        {% if dup_count > 0 %}
+        <div class="stat-card">
+            <div class="stat-label">Potential Duplicates</div>
+            <div class="stat-value warning">{{ dup_count }}</div>
+            <div class="stat-sub">Review before approving</div>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if dup_count > 0 %}
+    <div style="background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.4);
+                border-radius: 6px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px;
+                color: #b45309;">
+        <strong>⚠ Potential duplicates detected.</strong>
+        Rows flagged in yellow may already exist in the Office Account or appear
+        more than once in this file. Uncheck them below if you do not want to import them.
+    </div>
+    {% endif %}
+
+    <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+        Review every row below.
+        <strong>Uncheck</strong> rows you do not want to import.
+        Edit the <em>Description</em> and <em>Reference</em> fields where needed.
+        Click <strong>Approve Import</strong> when ready — only checked rows will be saved.
+    </p>
+
+    <form method="POST" action="{{ url_for('office_import_approve') }}" id="approveForm">
+        <input type="hidden" name="batch_id" value="{{ batch_id }}">
+
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                <thead>
+                    <tr>
+                        <th style="width: 36px; text-align: center; padding: 8px 6px;">
+                            <input type="checkbox" id="selectAll" title="Select / deselect all"
+                                   checked style="cursor: pointer;">
+                        </th>
+                        <th style="padding: 8px 10px; white-space: nowrap;">Date</th>
+                        <th style="padding: 8px 10px; white-space: nowrap;">Type</th>
+                        <th style="padding: 8px 10px; text-align: right; white-space: nowrap;">Amount</th>
+                        <th style="padding: 8px 10px; min-width: 200px;">Description</th>
+                        <th style="padding: 8px 10px; min-width: 160px;">Reference</th>
+                        <th style="padding: 8px 10px; min-width: 140px;">Source</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    {% set row_id = row.id | string %}
+                    {% set is_dup = row.is_duplicate %}
+                    <tr class="import-row{% if is_dup %} import-row-dup{% endif %}"
+                        data-row="{{ row_id }}"
+                        style="{% if is_dup %}background: rgba(234,179,8,0.08);{% endif %}">
+
+                        <td style="text-align: center; padding: 6px;">
+                            <input type="checkbox"
+                                   name="keep_{{ row_id }}"
+                                   value="on"
+                                   class="row-keep"
+                                   checked
+                                   data-row="{{ row_id }}">
+                        </td>
+
+                        <td style="padding: 6px 10px; white-space: nowrap;">
+                            {{ row.transaction_date }}
+                        </td>
+
+                        <td style="padding: 6px 10px; white-space: nowrap;">
+                            {% if row.transaction_type == 'Receipt' %}
+                            <span class="status-badge" style="background: rgba(16,185,129,0.2);
+                                color: #059669; border: 1px solid rgba(16,185,129,0.4);">
+                                Receipt
+                            </span>
+                            {% else %}
+                            <span class="status-badge" style="background: rgba(239,68,68,0.15);
+                                color: #dc2626; border: 1px solid rgba(239,68,68,0.3);">
+                                Payment
+                            </span>
+                            {% endif %}
+                            {% if is_dup %}
+                            <span title="Potential duplicate"
+                                  style="display: inline-block; margin-left: 4px;
+                                         font-size: 10px; font-weight: 700;
+                                         background: rgba(234,179,8,0.25); color: #b45309;
+                                         border-radius: 4px; padding: 1px 5px;">
+                                ⚠ DUP
+                            </span>
+                            {% endif %}
+                        </td>
+
+                        <td style="padding: 6px 10px; text-align: right; white-space: nowrap;
+                                   font-variant-numeric: tabular-nums; font-weight: 600;
+                                   {% if row.transaction_type == 'Receipt' %}color: #059669;{% else %}color: #dc2626;{% endif %}">
+                            {% if row.transaction_type == 'Receipt' %}+{% else %}−{% endif %}£{{ "{:,.2f}".format(row.amount | float) }}
+                        </td>
+
+                        <td style="padding: 6px 8px;">
+                            <input type="text"
+                                   name="desc_{{ row_id }}"
+                                   value="{{ row.description or '' }}"
+                                   placeholder="Description (optional)"
+                                   maxlength="500"
+                                   class="row-input"
+                                   data-row="{{ row_id }}"
+                                   style="width: 100%; padding: 4px 8px; font-size: 12px;
+                                          border: 1px solid var(--border-subtle); border-radius: 4px;
+                                          background: var(--bg-elevated); color: var(--text-primary);">
+                        </td>
+
+                        <td style="padding: 6px 8px;">
+                            <input type="text"
+                                   name="ref_{{ row_id }}"
+                                   value="{{ row.reference or '' }}"
+                                   placeholder="Reference"
+                                   maxlength="200"
+                                   class="row-input"
+                                   data-row="{{ row_id }}"
+                                   style="width: 100%; padding: 4px 8px; font-size: 12px;
+                                          border: 1px solid var(--border-subtle); border-radius: 4px;
+                                          background: var(--bg-elevated); color: var(--text-primary);">
+                        </td>
+
+                        <td style="padding: 6px 8px;">
+                            <select name="source_{{ row_id }}"
+                                    class="row-input"
+                                    data-row="{{ row_id }}"
+                                    style="width: 100%; padding: 4px 8px; font-size: 12px;
+                                           border: 1px solid var(--border-subtle); border-radius: 4px;
+                                           background: var(--bg-elevated); color: var(--text-primary);">
+                                <option value="Bank Transfer" selected>Bank Transfer</option>
+                                <option value="Cash">Cash</option>
+                                <option value="Cheque">Cheque</option>
+                                <option value="Card">Card</option>
+                            </select>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Action bar -->
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+                    margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border-subtle);">
+            <button type="submit" class="btn" id="approveBtn">
+                ✓ Approve Import
+            </button>
+            <span id="selectedCount" style="font-size: 13px; color: var(--text-muted);">
+                {{ rows|length }} row(s) selected
+            </span>
+            <div style="flex: 1;"></div>
+            <form method="POST" action="{{ url_for('office_import_cancel') }}" style="margin: 0;">
+                <input type="hidden" name="batch_id" value="{{ batch_id }}">
+                <button type="submit" class="btn btn-secondary"
+                        onclick="return confirm('Cancel this import? All staged rows will be discarded.');">
+                    Cancel Import
+                </button>
+            </form>
+        </div>
+    </form>
+</div>
+
+<style>
+.import-row td { transition: opacity 0.15s; }
+.import-row.row-unchecked td { opacity: 0.4; }
+.import-row.row-unchecked .row-input { pointer-events: none; }
+</style>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    var checkboxes = document.querySelectorAll('.row-keep');
+    var selectAll  = document.getElementById('selectAll');
+    var countEl    = document.getElementById('selectedCount');
+    var approveBtn = document.getElementById('approveBtn');
+
+    function updateCount() {
+        var checked = document.querySelectorAll('.row-keep:checked').length;
+        var total   = checkboxes.length;
+        countEl.textContent = checked + ' of ' + total + ' row(s) selected';
+        approveBtn.disabled = (checked === 0);
+        if (checked === 0) {
+            approveBtn.textContent = 'No rows selected';
+        } else {
+            approveBtn.textContent = '✓ Approve Import (' + checked + ' transaction' + (checked === 1 ? '' : 's') + ')';
+        }
+        selectAll.indeterminate = (checked > 0 && checked < total);
+        selectAll.checked = (checked === total);
+    }
+
+    function setRowStyle(cb) {
+        var rowId = cb.getAttribute('data-row');
+        var tr    = document.querySelector('.import-row[data-row="' + rowId + '"]');
+        if (tr) {
+            if (cb.checked) {
+                tr.classList.remove('row-unchecked');
+            } else {
+                tr.classList.add('row-unchecked');
+            }
+        }
+    }
+
+    checkboxes.forEach(function (cb) {
+        cb.addEventListener('change', function () {
+            setRowStyle(cb);
+            updateCount();
+        });
+    });
+
+    if (selectAll) {
+        selectAll.addEventListener('change', function () {
+            checkboxes.forEach(function (cb) {
+                cb.checked = selectAll.checked;
+                setRowStyle(cb);
+            });
+            updateCount();
+        });
+    }
+
+    // Confirm on approve
+    var form = document.getElementById('approveForm');
+    if (form && approveBtn) {
+        form.addEventListener('submit', function (e) {
+            var checked = document.querySelectorAll('.row-keep:checked').length;
+            if (checked === 0) {
+                e.preventDefault();
+                alert('No rows are selected. Please select at least one transaction or cancel the import.');
+                return;
+            }
+            approveBtn.disabled = true;
+            approveBtn.textContent = 'Importing…';
+        });
+    }
+
+    updateCount();
+})();
+</script>
+{% endblock %}
