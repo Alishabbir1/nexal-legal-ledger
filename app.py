@@ -1198,6 +1198,242 @@ def update_office_cashbook_status(transaction_id):
     return redirect(url_for('office_account'))
 
 
+# ---------------------------------------------------------------------------
+# Office Account — Bank Statement Import (Phase 1: CSV)
+# All four routes write only to office_import_staging or office_cashbook.
+# They never touch client ledger, cashbook_transactions, or reconciliations.
+# ---------------------------------------------------------------------------
+
+def _flag_import_duplicates(rows):
+    """
+    Flag potential duplicates in import rows.
+    Checks:
+      1. Internal: same date + amount + type appears more than once in the batch.
+      2. External: matching record already exists in office_cashbook.
+    """
+    seen = {}
+    for row in rows:
+        key = (row['date'], str(row['amount']), row['transaction_type'])
+        row['is_duplicate'] = key in seen
+        if not row['is_duplicate']:
+            # Check against existing office_cashbook records
+            row['is_duplicate'] = db.office_cashbook_duplicate_exists(
+                row['date'], str(row['amount']), row['transaction_type']
+            )
+        seen[key] = True
+    return rows
+
+
+@app.route('/office-account/import-statement', methods=['GET', 'POST'])
+def office_import_statement():
+    """
+    Step 1 & 2 — Upload bank statement CSV.
+    GET : show upload form.
+    POST: parse file, flag duplicates, store in staging, redirect to review.
+    """
+    if request.method == 'POST':
+        uploaded = request.files.get('statement_file')
+        if not uploaded or not uploaded.filename:
+            flash('Please select a CSV file to upload.', 'error')
+            return redirect(url_for('office_import_statement'))
+
+        filename = uploaded.filename
+        ext = (filename.rsplit('.', 1)[-1] if '.' in filename else '').lower()
+        if ext not in ('csv',):
+            flash(
+                f"Unsupported file type '.{ext}'. Please upload a CSV file.",
+                'error',
+            )
+            return redirect(url_for('office_import_statement'))
+
+        content = uploaded.read()
+        if not content:
+            flash('The uploaded file is empty.', 'error')
+            return redirect(url_for('office_import_statement'))
+
+        from lib.office_import import parse_office_statement
+        rows, parse_error = parse_office_statement(content, filename)
+        if parse_error:
+            flash(parse_error, 'error')
+            return redirect(url_for('office_import_statement'))
+
+        stmt_start = request.form.get('statement_start') or None
+        stmt_end = request.form.get('statement_end') or None
+
+        # Duplicate detection
+        rows = _flag_import_duplicates(rows)
+
+        # Persist staging batch
+        import uuid as _uuid
+        batch_id = str(_uuid.uuid4())
+        db.create_office_import_batch(
+            batch_id, filename, stmt_start, stmt_end, rows, current_username()
+        )
+
+        dup_count = sum(1 for r in rows if r.get('is_duplicate'))
+        log_audit(
+            'Office Account', 'IMPORT_BATCH_CREATED',
+            details=(
+                f"File: {filename}, {len(rows)} row(s) parsed, "
+                f"{dup_count} potential duplicate(s). Batch: {batch_id[:8]}"
+            ),
+        )
+        return redirect(url_for('office_import_review', batch=batch_id))
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    return render_template('office_import.html', today=today)
+
+
+@app.route('/office-account/import-review')
+def office_import_review():
+    """
+    Step 3 — Review imported transactions before committing.
+    Loads staged rows; user can edit description/reference/source and remove rows.
+    """
+    batch_id = request.args.get('batch', '').strip()
+    if not batch_id:
+        flash('No import session found. Please upload a file.', 'error')
+        return redirect(url_for('office_import_statement'))
+
+    rows, batch_meta = db.get_office_import_staging(batch_id)
+    if not rows:
+        flash(
+            'Import session not found or has expired. Please upload again.', 'error'
+        )
+        return redirect(url_for('office_import_statement'))
+
+    receipt_total = sum(
+        float(r['amount']) for r in rows if r['transaction_type'] == 'Receipt'
+    )
+    payment_total = sum(
+        float(r['amount']) for r in rows if r['transaction_type'] == 'Payment'
+    )
+    dup_count = sum(1 for r in rows if r.get('is_duplicate'))
+
+    return render_template(
+        'office_import_review.html',
+        rows=rows,
+        batch_id=batch_id,
+        batch_meta=batch_meta,
+        receipt_total=receipt_total,
+        payment_total=payment_total,
+        dup_count=dup_count,
+    )
+
+
+@app.route('/office-account/import-approve', methods=['POST'])
+def office_import_approve():
+    """
+    Step 4 — Approve import: create office_cashbook records for kept rows.
+    Processes the review form, creates transactions, clears staging, and redirects.
+    """
+    batch_id = request.form.get('batch_id', '').strip()
+    if not batch_id:
+        flash('Invalid import session.', 'error')
+        return redirect(url_for('office_account'))
+
+    rows, batch_meta = db.get_office_import_staging(batch_id)
+    if not rows:
+        flash('Import session not found. Please upload again.', 'error')
+        return redirect(url_for('office_import_statement'))
+
+    # Collect which rows the user kept and their (possibly edited) values
+    kept = []
+    for row in rows:
+        row_id = str(row['id'])
+        if request.form.get(f'keep_{row_id}') != 'on':
+            continue  # user removed this row
+        reference = (
+            request.form.get(f'ref_{row_id}') or row.get('reference') or ''
+        ).strip() or 'Bank Import'
+        description = (
+            request.form.get(f'desc_{row_id}') or row.get('description') or ''
+        ).strip() or None
+        source = request.form.get(f'source_{row_id}') or 'Bank Transfer'
+        if source not in ('Cash', 'Cheque', 'Bank Transfer', 'Card'):
+            source = 'Bank Transfer'
+        kept.append({
+            'transaction_date': row['transaction_date'],
+            'amount': Decimal(str(row['amount'])),
+            'transaction_type': row['transaction_type'],
+            'reference': reference,
+            'source': source,
+            'description': description,
+            'import_batch_id': batch_id,
+        })
+
+    if not kept:
+        db.delete_office_import_staging(batch_id)
+        log_audit(
+            'Office Account', 'IMPORT_CANCELLED',
+            details=f"All rows removed during review. Batch: {batch_id[:8]}",
+        )
+        flash('No transactions were selected — import cancelled.', 'info')
+        return redirect(url_for('office_account'))
+
+    # Process in chronological order so balance checks stay consistent
+    kept.sort(key=lambda r: r['transaction_date'])
+
+    created = 0
+    error_msgs = []
+    for row in kept:
+        try:
+            db.create_office_transaction(
+                transaction_date=row['transaction_date'],
+                amount=row['amount'],
+                transaction_type=row['transaction_type'],
+                reference=row['reference'],
+                source=row['source'],
+                description=row['description'],
+                created_by=current_username(),
+                import_batch_id=row['import_batch_id'],
+            )
+            created += 1
+        except ValueError as exc:
+            error_msgs.append(
+                f"{row['transaction_date']} £{row['amount']} ({row['transaction_type']}): {exc}"
+            )
+
+    # Clean up staging regardless of outcome
+    db.delete_office_import_staging(batch_id)
+
+    log_audit(
+        'Office Account', 'IMPORT_APPROVED',
+        details=(
+            f"Batch {batch_id[:8]}: {created}/{len(kept)} transaction(s) imported "
+            f"by {current_username()}. Errors: {len(error_msgs)}"
+        ),
+    )
+
+    if error_msgs:
+        for msg in error_msgs:
+            flash(f'Could not import: {msg}', 'warning')
+
+    if created:
+        flash(
+            f'{created} transaction(s) imported into Office Account successfully.',
+            'success',
+        )
+    if len(error_msgs) == len(kept):
+        flash('No transactions were imported due to errors shown above.', 'error')
+
+    return redirect(url_for('office_account'))
+
+
+@app.route('/office-account/import-cancel', methods=['POST'])
+def office_import_cancel():
+    """Cancel an in-progress import and delete its staging rows."""
+    batch_id = request.form.get('batch_id', '').strip()
+    if batch_id:
+        db.delete_office_import_staging(batch_id)
+        log_audit(
+            'Office Account', 'IMPORT_CANCELLED',
+            details=f"User cancelled import. Batch: {batch_id[:8]}",
+        )
+    flash('Import cancelled.', 'info')
+    return redirect(url_for('office_account'))
+
+
 @app.route('/reconciliation')
 def reconciliation():
     """Reconciliation page"""

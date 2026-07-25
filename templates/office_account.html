@@ -7,9 +7,13 @@
         Firm's own money (profit) — fees earned, transfers from client matters, and office expenses.
     </p>
     
-    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+    <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
         <a href="{{ url_for('office_add_income') }}" class="btn">Add Office Income</a>
         <a href="{{ url_for('office_add_expense') }}" class="btn btn-secondary">Add Office Expense</a>
+        <a href="{{ url_for('office_import_statement') }}" class="btn btn-secondary"
+           title="Upload a bank statement CSV to bulk-import Office Account transactions">
+            ↑ Upload Bank Statement
+        </a>
     </div>
     
     <div class="stat-grid">
