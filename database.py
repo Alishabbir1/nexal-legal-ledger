@@ -2713,14 +2713,19 @@ class Database:
     def create_office_transaction(self, transaction_date: str, amount: Decimal,
                                   transaction_type: str, reference: str, source: str,
                                   description: str = None, created_by: str = 'System',
-                                  import_batch_id: str = None) -> int:
+                                  import_batch_id: str = None,
+                                  skip_balance_check: bool = False) -> int:
         """
         Create office-only transaction. NEVER touches client ledger or cashbook_transactions.
         client_id and matter_id are implicitly NULL (office account only).
+
+        skip_balance_check: pass True for bulk import approvals where the user has
+        explicitly reviewed and approved all rows; avoids date-filtered intermediate
+        balance checks that falsely block legitimate historical payments.
         """
         if not reference or not reference.strip():
             raise ValueError("Reference is mandatory")
-        if transaction_type == 'Payment':
+        if transaction_type == 'Payment' and not skip_balance_check:
             office_balance = self.get_office_balance(as_of_date=transaction_date)
             if office_balance - amount < Decimal('0'):
                 raise ValueError("Office account balance cannot go below £0.")

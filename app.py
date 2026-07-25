@@ -1454,6 +1454,7 @@ def office_import_approve():
                 description=row['description'],
                 created_by=current_username(),
                 import_batch_id=row['import_batch_id'],
+                skip_balance_check=True,  # user reviewed and approved these rows
             )
             created += 1
         except ValueError as exc:

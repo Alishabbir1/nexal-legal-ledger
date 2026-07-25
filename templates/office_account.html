@@ -75,9 +75,9 @@
                 <td><code>{{ trans.transaction_id or '-' }}</code></td>
                 <td>{{ trans.transaction_date }}</td>
                 <td>{{ trans.transaction_type }}{% if status == 'Pending' %} <small style="color:#e67e22; font-weight:600;">(Pending)</small>{% endif %}</td>
-                {% set is_positive = trans.amount|float >= 0 %}
+                {% set is_positive = trans.transaction_type != 'Payment' %}
                 <td class="{% if is_positive %}amount-positive{% else %}amount-negative{% endif %}{% if status == 'Pending' %}" style="opacity: 0.6;{% elif status == 'Declined' %}" style="text-decoration: line-through;{% endif %}">
-                    {% if is_positive %}+{% else %}-{% endif %}£{{ "{:,.2f}".format(trans.amount|abs) }}
+                    {% if is_positive %}+{% else %}-{% endif %}£{{ "{:,.2f}".format(trans.amount|float|abs) }}
                 </td>
                 <td>{{ trans.reference }}</td>
                 <td>{{ trans.source }}</td>
