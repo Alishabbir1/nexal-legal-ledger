@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en" style="background-color:#070a14;color-scheme:dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dev Login — Nexal Legal Ledger</title>
+  <style>
+    :root {
+      --bg-base: #070a14;
+      --bg-surface: #0c1120;
+      --bg-card: #111827;
+      --border: #1e2d45;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --text-primary: #dde6f5;
+      --text-secondary: #6b7c99;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 14px; background: var(--bg-base); color: var(--text-primary); }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+      background: var(--bg-base);
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 40px;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 700;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+    .logo-text { font-size: 18px; font-weight: 600; color: var(--text-primary); }
+    .dev-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      color: var(--warning);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+    .subtitle {
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 28px;
+    }
+    .field { margin-bottom: 16px; }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text-primary);
+      font-size: 14px;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+    input[type="text"]:focus,
+    input[type="password"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+    }
+    .btn {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 11px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-top: 8px;
+    }
+    .btn:hover { background: var(--accent-hover); }
+    .error-box {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .notice {
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .notice strong { color: var(--warning); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <div class="logo-icon">N</div>
+      <span class="logo-text">Nexal Legal</span>
+    </div>
+
+    <div class="dev-badge">
+      ⚠ Development Mode
+    </div>
+
+    <h1>Local Dev Login</h1>
+    <p class="subtitle">
+      Sign in with your local database credentials.<br>
+      This page is only available when <code>NEXAL_DEV=1</code>.
+    </p>
+
+    {% if error %}
+    <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" placeholder="admin" autocomplete="username" autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" placeholder="Enter your local password" autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn">Sign in locally</button>
+    </form>
+
+    <div class="notice">
+      <strong>Dev only.</strong>
+      This page authenticates against the <strong>local</strong> database only.
+      No requests are sent to the Portal or production Ledger.
+      Sessions created here are never valid in production.
+    </div>
+  </div>
+</body>
+</html>

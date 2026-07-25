@@ -82,8 +82,15 @@ def get_portal_logout_url() -> str:
 
 
 def portal_login_redirect(next_path: str = None, reason: str = None):
-    """Flask redirect to Portal login."""
+    """Flask redirect to Portal login, or local dev login when NEXAL_DEV=1."""
     from flask import redirect
+
+    try:
+        from lib.dev_auth import get_dev_login_url, is_dev_mode
+        if is_dev_mode():
+            return redirect(get_dev_login_url(next_path))
+    except Exception:
+        pass
 
     return redirect(get_portal_login_url(next_path, reason))
 

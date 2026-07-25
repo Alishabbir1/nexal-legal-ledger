@@ -170,6 +170,7 @@ LOGIN_EXEMPT_ENDPOINTS = {
     'login', 'static', 'admin_recovery', 'admin_recovery_reset', 'reset_password',
     'admin_reset_password_page', 'force_password_change', 'sso_login', 'api_sso_login',
     'sso_status', 'sso_logout', 'api_ops_backup_health',
+    'dev_login',  # DEV ONLY: local dev login page — never reachable in production
 }
 
 
@@ -310,6 +311,16 @@ def require_login():
         return
     if endpoint == 'logout':
         return
+    # DEV MODE ONLY — never executed on the VPS (NEXAL_PRODUCTION blocks it).
+    # Allows sessions created by /dev/login without Portal SSO validation.
+    try:
+        from lib.dev_auth import is_dev_mode
+        if is_dev_mode() and session.get('dev_mode_login') and session.get('user_id'):
+            session.permanent = True
+            session['_last_activity'] = time()
+            return None
+    except Exception:
+        pass
     if session.get('sso_login'):
         binding_error = validate_sso_session_binding(session, get_db_for_firm)
         if binding_error:
@@ -336,6 +347,62 @@ def require_login():
         flash('Session expired due to inactivity. Please log in again.', 'info')
         return portal_login_redirect(next_path=request.path, reason='timeout')
     session['_last_activity'] = now
+
+
+# ---------------------------------------------------------------------------
+# DEV ONLY: local login — 404 in production, only reachable when NEXAL_DEV=1
+# ---------------------------------------------------------------------------
+
+@app.route('/dev/login', methods=['GET', 'POST'])
+def dev_login():
+    """
+    Development-only login page.  Bypasses Portal SSO so developers can test
+    locally without any connection to the production Portal or production data.
+
+    Guards (both must pass):
+      - NEXAL_DEV=1 must be set in the environment
+      - NEXAL_PRODUCTION must NOT be set (or must be falsy)
+
+    On the VPS both guards fail and this route returns 404.
+    """
+    from lib.dev_auth import is_dev_mode
+    if not is_dev_mode():
+        abort(404)
+
+    error = None
+    next_url = request.args.get('next', '') or url_for('client_ledger')
+
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        password = (request.form.get('password') or '').strip()
+        next_url = request.form.get('next') or next_url
+
+        user = None
+        try:
+            user = db.verify_user_credentials(username, password)
+        except Exception:
+            pass
+
+        if user:
+            session.clear()
+            session['user_id'] = user['user_id']
+            session['username'] = user['username']
+            session['role'] = user['role']
+            session['dev_mode_login'] = True
+            session.permanent = True
+            try:
+                db.insert_audit_log(
+                    username, user['role'],
+                    'Login - Dev Mode', 'Authentication', None,
+                    'Local dev login (NEXAL_DEV=1) — no Portal SSO'
+                )
+            except Exception:
+                pass
+            return redirect(next_url)
+
+        error = 'Invalid username or password.'
+
+    return render_template('dev_login.html', error=error, next_url=next_url)
 
 
 @app.context_processor
