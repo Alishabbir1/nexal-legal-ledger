@@ -58,51 +58,88 @@
 
     {# ── Opening Balance Continuity Check ─────────────────────────── #}
     {% if balance_match == 'match' %}
-    <div style="display: flex; align-items: flex-start; gap: 10px;
-                background: rgba(5,150,105,0.10); border: 1px solid rgba(5,150,105,0.40);
-                border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px;">
-        <span style="font-size: 16px; line-height: 1;">✅</span>
-        <div>
-            <strong style="color: #059669;">Opening Balance matches.</strong>
-            The opening balance in this statement
-            (£{{ "{:,.2f}".format(opening_balance|float) }})
-            matches the previous Office Account closing balance
-            (£{{ "{:,.2f}".format(ledger_balance_before|float) }}).
+    <div style="background: rgba(5,150,105,0.10); border: 1px solid rgba(5,150,105,0.40);
+                border-radius: 8px; padding: 14px 18px; margin-bottom: 18px; font-size: 13px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+            <span style="font-size: 16px;">✅</span>
+            <strong style="color: #059669;">Opening Balance Continuity Confirmed</strong>
         </div>
+        <table style="border-collapse: collapse; font-size: 13px; width: auto;">
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">Previous Statement Closing:</td>
+                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(prev_statement_closing|float) }}</td>
+            </tr>
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Opening:</td>
+                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(opening_balance|float) }}</td>
+            </tr>
+            {% if closing_balance %}
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Closing:</td>
+                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(closing_balance|float) }}</td>
+            </tr>
+            {% endif %}
+        </table>
     </div>
     {% elif balance_match == 'first_import' %}
-    <div style="display: flex; align-items: flex-start; gap: 10px;
-                background: rgba(59,130,246,0.10); border: 1px solid rgba(59,130,246,0.35);
-                border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px;">
-        <span style="font-size: 16px; line-height: 1;">ℹ️</span>
-        <div>
-            <strong style="color: #3b82f6;">First Import.</strong>
-            No previous Office Account transactions exist before this statement period.
-            The opening balance (£{{ "{:,.2f}".format(opening_balance|float) }})
-            will be treated as the starting balance.
+    <div style="background: rgba(59,130,246,0.10); border: 1px solid rgba(59,130,246,0.35);
+                border-radius: 8px; padding: 14px 18px; margin-bottom: 18px; font-size: 13px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+            <span style="font-size: 16px;">ℹ️</span>
+            <strong style="color: #3b82f6;">First Import — Opening Balance Accepted</strong>
         </div>
+        <table style="border-collapse: collapse; font-size: 13px; width: auto;">
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">Previous Statement Closing:</td>
+                <td style="padding: 3px 0; color: var(--text-muted);">No previous statement on record</td>
+            </tr>
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Opening:</td>
+                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(opening_balance|float) }}</td>
+            </tr>
+            {% if closing_balance %}
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Closing:</td>
+                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(closing_balance|float) }}</td>
+            </tr>
+            {% endif %}
+        </table>
+        <p style="margin: 10px 0 0; font-size: 12px; color: var(--text-muted);">
+            This opening balance will be recorded as the starting balance for future continuity checks.
+        </p>
     </div>
     {% elif balance_match == 'mismatch' %}
     <div id="balanceMismatchBanner"
          style="background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.40);
-                border-radius: 8px; padding: 14px 16px; margin-bottom: 18px; font-size: 13px;">
-        <div style="display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px;">
-            <span style="font-size: 16px; line-height: 1;">⚠️</span>
-            <div>
-                <strong style="color: #dc2626;">Opening Balance Mismatch.</strong>
-                The opening balance in this statement
-                <strong>(£{{ "{:,.2f}".format(opening_balance|float) }})</strong>
-                does not match the previous Office Account closing balance
-                <strong>(£{{ "{:,.2f}".format(ledger_balance_before|float) }})</strong>.
-                <br><br>
-                <span style="color: var(--text-secondary);">Possible reasons:</span>
-                <ul style="margin: 6px 0 0 18px; color: var(--text-secondary); line-height: 1.7;">
-                    <li>Missing bank statement(s) — a month may not have been imported yet</li>
-                    <li>Statements imported out of order</li>
-                    <li>Manual adjustments were made to the Office Account</li>
-                    <li>Incorrect or partially exported CSV file</li>
-                </ul>
-            </div>
+                border-radius: 8px; padding: 14px 18px; margin-bottom: 18px; font-size: 13px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+            <span style="font-size: 16px;">⚠️</span>
+            <strong style="color: #dc2626;">Opening Balance Mismatch</strong>
+        </div>
+        <table style="border-collapse: collapse; font-size: 13px; width: auto; margin-bottom: 12px;">
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">Previous Statement Closing:</td>
+                <td style="padding: 3px 0; font-weight: 600; color: #dc2626;">£{{ "{:,.2f}".format(prev_statement_closing|float) }}</td>
+            </tr>
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Opening:</td>
+                <td style="padding: 3px 0; font-weight: 600; color: #dc2626;">£{{ "{:,.2f}".format(opening_balance|float) }}</td>
+            </tr>
+            {% if closing_balance %}
+            <tr>
+                <td style="padding: 3px 16px 3px 0; color: var(--text-secondary);">This Statement Closing:</td>
+                <td style="padding: 3px 0; font-weight: 600;">£{{ "{:,.2f}".format(closing_balance|float) }}</td>
+            </tr>
+            {% endif %}
+        </table>
+        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            <strong>Possible reasons:</strong>
+            <ul style="margin: 5px 0 0 18px; line-height: 1.7;">
+                <li>Missing statement(s) — a period may not have been imported yet</li>
+                <li>Statements imported out of order</li>
+                <li>Manual adjustments made to the Office Account</li>
+                <li>Incorrect or partially exported CSV file</li>
+            </ul>
         </div>
         <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
                       border-top: 1px solid rgba(220,38,38,0.25); padding-top: 10px;">
@@ -111,7 +148,7 @@
                    style="margin-top: 2px; flex-shrink: 0; cursor: pointer;"
                    onchange="updateMismatchConfirmation();">
             <span style="color: #dc2626; font-size: 13px;">
-                I understand the opening balance does not match.
+                I understand the opening balance does not match the previous statement closing balance.
                 I wish to proceed with this import anyway.
             </span>
         </label>

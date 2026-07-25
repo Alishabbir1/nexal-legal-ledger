@@ -1329,17 +1329,36 @@ def office_import_statement():
         stmt_end = request.form.get('statement_end') or None
 
         # --- Opening balance continuity check ---
+        # We compare the CSV's opening_balance against the CLOSING BALANCE of the
+        # most recently approved statement (from office_statement_history).
+        # We never use the running ledger sum — that would conflate net movements
+        # with the actual closing balance of a prior period.
         opening_balance = result.opening_balance
-        ledger_balance_before: Optional[Decimal] = None
+        closing_balance = result.closing_balance   # from CSV (balance column / closing marker)
+
+        # If the CSV has no closing balance column, compute it from the transactions.
+        if closing_balance is None and opening_balance is not None and rows:
+            receipts = sum(
+                r['amount'] for r in rows
+                if r['transaction_type'] == 'Receipt'
+                   and not r.get('is_balance_brought_forward')
+            )
+            payments = sum(
+                r['amount'] for r in rows
+                if r['transaction_type'] == 'Payment'
+            )
+            closing_balance = opening_balance + receipts - payments
+
+        prev_statement_closing: Optional[Decimal] = None
         balance_match: str = 'no_opening_balance'
 
         if opening_balance is not None:
             check_date = stmt_start or (rows[0]['date'] if rows else None)
             if check_date:
-                ledger_balance_before = db.get_office_closing_balance_before_date(check_date)
-                if ledger_balance_before is None:
+                prev_statement_closing = db.get_previous_statement_closing(check_date)
+                if prev_statement_closing is None:
                     balance_match = 'first_import'
-                elif abs(ledger_balance_before - opening_balance) < Decimal('0.01'):
+                elif abs(prev_statement_closing - opening_balance) < Decimal('0.01'):
                     balance_match = 'match'
                 else:
                     balance_match = 'mismatch'
@@ -1369,7 +1388,8 @@ def office_import_statement():
         db.create_office_import_batch(
             batch_id, filename, stmt_start, stmt_end, rows, current_username(),
             opening_balance=opening_balance,
-            ledger_balance_before=ledger_balance_before,
+            closing_balance=closing_balance,
+            ledger_balance_before=prev_statement_closing,
             balance_match=balance_match,
         )
 
@@ -1423,7 +1443,8 @@ def office_import_review():
         dup_count=dup_count,
         balance_match=batch_meta.get('balance_match') if batch_meta else None,
         opening_balance=batch_meta.get('opening_balance') if batch_meta else None,
-        ledger_balance_before=batch_meta.get('ledger_balance_before') if batch_meta else None,
+        closing_balance=batch_meta.get('closing_balance') if batch_meta else None,
+        prev_statement_closing=batch_meta.get('ledger_balance_before') if batch_meta else None,
     )
 
 
@@ -1513,6 +1534,34 @@ def office_import_approve():
 
     # Clean up staging regardless of outcome
     db.delete_office_import_staging(batch_id)
+
+    # Record permanent statement history (used for continuity checks on future imports).
+    # This must happen after delete_office_import_staging and only when at least one
+    # transaction was created. statement_history is the sole source of truth for
+    # opening-balance continuity — we never use the running ledger sum for that.
+    if created and batch_meta and batch_meta.get('opening_balance') is not None:
+        cb = batch_meta.get('closing_balance')
+        if cb is None:
+            # Fallback: compute from opening + net of kept rows
+            receipts = sum(
+                r['amount'] for r in kept
+                if r['transaction_type'] == 'Receipt'
+            )
+            payments = sum(
+                r['amount'] for r in kept
+                if r['transaction_type'] == 'Payment'
+            )
+            opening = Decimal(str(batch_meta['opening_balance']))
+            cb = str(opening + receipts - payments)
+        db.record_statement_history(
+            batch_id=batch_id,
+            filename=batch_meta.get('filename', ''),
+            statement_start=batch_meta.get('statement_start', ''),
+            statement_end=batch_meta.get('statement_end', ''),
+            opening_balance=batch_meta.get('opening_balance'),
+            closing_balance=cb,
+            approved_by=current_username(),
+        )
 
     log_audit(
         'Office Account', 'IMPORT_APPROVED',

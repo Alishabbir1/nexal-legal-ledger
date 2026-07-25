@@ -494,6 +494,29 @@ class Database:
         self._ensure_column(cursor, 'office_import_staging', 'opening_balance', "TEXT")
         self._ensure_column(cursor, 'office_import_staging', 'ledger_balance_before', "TEXT")
         self._ensure_column(cursor, 'office_import_staging', 'balance_match', "TEXT")
+        self._ensure_column(cursor, 'office_import_staging', 'closing_balance', "TEXT")
+
+        # Permanent statement history — closing balances for continuity validation.
+        # Each approved import batch records one row here.  These records are
+        # immutable after creation; continuity checks ONLY use this table,
+        # never the running ledger sum.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS office_statement_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL,
+                filename TEXT,
+                statement_start TEXT NOT NULL,
+                statement_end TEXT,
+                opening_balance TEXT,
+                closing_balance TEXT NOT NULL,
+                approved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_by TEXT NOT NULL DEFAULT 'System'
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_osh_start "
+            "ON office_statement_history(statement_start)"
+        )
         conn.commit()
         if not self.skip_user_seed:
             self._seed_default_users(cursor)
@@ -2796,6 +2819,7 @@ class Database:
         rows,
         created_by: str = 'System',
         opening_balance=None,
+        closing_balance=None,
         ledger_balance_before=None,
         balance_match: str = None,
     ) -> None:
@@ -2804,13 +2828,17 @@ class Database:
         Nothing is written to office_cashbook until import_approve_batch is called.
 
         opening_balance:      Decimal|None — opening balance from the CSV file.
-        ledger_balance_before: Decimal|None — DB balance immediately before statement start.
+        closing_balance:      Decimal|None — closing balance from the CSV file
+                              (or computed as opening + receipts − payments).
+        ledger_balance_before: Decimal|None — previous statement's closing balance
+                               from office_statement_history, for display only.
         balance_match:        'first_import'|'match'|'mismatch'|'no_opening_balance'
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             ob_str = str(opening_balance) if opening_balance is not None else None
+            cb_str = str(closing_balance) if closing_balance is not None else None
             lb_str = str(ledger_balance_before) if ledger_balance_before is not None else None
             for row in rows:
                 cursor.execute(
@@ -2819,8 +2847,8 @@ class Database:
                     (batch_id, filename, statement_start, statement_end, row_number,
                      transaction_date, description, reference, amount, transaction_type,
                      source, is_duplicate, created_by,
-                     opening_balance, ledger_balance_before, balance_match)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     opening_balance, closing_balance, ledger_balance_before, balance_match)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -2837,6 +2865,7 @@ class Database:
                         1 if row.get('is_duplicate') else 0,
                         created_by,
                         ob_str,
+                        cb_str,
                         lb_str,
                         balance_match,
                     ),
@@ -2871,6 +2900,7 @@ class Database:
             'statement_start': first.get('statement_start', ''),
             'statement_end': first.get('statement_end', ''),
             'opening_balance': first.get('opening_balance'),
+            'closing_balance': first.get('closing_balance'),
             'ledger_balance_before': first.get('ledger_balance_before'),
             'balance_match': first.get('balance_match'),
         }
@@ -2923,6 +2953,73 @@ class Database:
         if count == 0:
             return None  # no history before this date → first import
         return self.get_office_balance(as_of_date=day_before)
+
+    def get_previous_statement_closing(self, statement_start: str) -> Optional[Decimal]:
+        """
+        Return the closing_balance of the most recent approved statement whose
+        statement_start is strictly before *statement_start*.
+
+        This is the ONLY value used for opening-balance continuity checks.
+        The running ledger balance is never used for this comparison.
+
+        Returns None when no prior statement exists (first import).
+        """
+        conn = self.get_connection()
+        try:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT closing_balance
+                FROM office_statement_history
+                WHERE statement_start < ?
+                ORDER BY statement_start DESC, approved_at DESC
+                LIMIT 1
+                """,
+                (statement_start,),
+            )
+            row = c.fetchone()
+        finally:
+            conn.close()
+        if row is None or row[0] is None:
+            return None
+        try:
+            return Decimal(str(row[0]))
+        except Exception:
+            return None
+
+    def record_statement_history(
+        self,
+        batch_id: str,
+        filename: str,
+        statement_start: str,
+        statement_end: str,
+        opening_balance,
+        closing_balance,
+        approved_by: str = 'System',
+    ) -> None:
+        """
+        Permanently record statement metadata after a batch is approved.
+
+        These records are immutable once written.  They are the sole source of
+        truth for opening-balance continuity validation on future imports.
+        """
+        ob_str = str(opening_balance) if opening_balance is not None else None
+        cb_str = str(closing_balance) if closing_balance is not None else None
+        conn = self.get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO office_statement_history
+                (batch_id, filename, statement_start, statement_end,
+                 opening_balance, closing_balance, approved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (batch_id, filename or '', statement_start or '',
+                 statement_end or '', ob_str, cb_str, approved_by),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def delete_office_import_staging(self, batch_id: str) -> None:
         """Delete all staging rows for a batch (cancel or post-approval cleanup)."""

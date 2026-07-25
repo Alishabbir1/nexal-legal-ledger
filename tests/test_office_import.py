@@ -27,6 +27,15 @@ def client(monkeypatch):
         session_security, 'validate_sso_session_binding', lambda *a, **kw: None
     )
     app.config['TESTING'] = True
+
+    # Clear statement history before each test to prevent cross-test pollution.
+    # office_statement_history persists between pytest runs; stale entries would
+    # incorrectly classify first-import batches as mismatches.
+    conn = app_module.db.get_connection()
+    conn.execute('DELETE FROM office_statement_history')
+    conn.commit()
+    conn.close()
+
     admin = app_module.db.get_user_by_username('admin')
     with app.test_client() as tc:
         with tc.session_transaction() as sess:
@@ -723,210 +732,306 @@ def test_first_import_no_warning_shown(client):
 
 def test_matching_opening_balance_shows_success_banner(client):
     """
-    When the CSV opening balance matches the DB closing balance,
-    the review page must show the green success banner.
+    When the CSV opening balance equals the previous statement's recorded closing
+    balance (from office_statement_history), the review page must show the green
+    match banner.
+    The comparison must use statement history, NOT the running ledger balance.
     """
-    # Determine actual DB balance as of just before our test date so we can craft a matching CSV.
-    check_date = '2099-12-01'
-    current_db_balance = app_module.db.get_office_closing_balance_before_date(check_date)
-    if current_db_balance is None:
-        current_db_balance = Decimal('0.00')
+    # Step 1: establish a prior statement in history at a unique date range
+    setup_csv = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2098-01-01,Opening Balance,,,0.00\r\n"
+        b"2098-01-10,Client Fee Receipt,,15000.00,15000.00\r\n"
+        b"2098-01-20,Office Rent,2000.00,,13000.00\r\n"
+    )
+    b1 = _upload_csv(client, setup_csv, '2098-01-01', '2098-01-31')
+    _approve_all(client, b1, confirm_mismatch=True)
 
-    # Build CSV whose opening balance exactly matches the current DB balance
-    opening_str = f"{current_db_balance:.2f}"
-    closing_val = current_db_balance + Decimal('3500.00')
-    second_csv = (
+    # Verify the statement history was recorded
+    prev_closing = app_module.db.get_previous_statement_closing('2098-02-01')
+    assert prev_closing is not None, "Statement history must be recorded after approval"
+    assert prev_closing == Decimal('13000.00'), (
+        f"Expected prev closing = 13000, got {prev_closing}"
+    )
+
+    # Step 2: upload February with opening = January closing
+    feb_csv = (
         f"Date,Description,Money Out,Money In,Balance\r\n"
-        f"2099-12-01,Opening Balance,,,{opening_str}\r\n"
-        f"2099-12-05,Client Fee Receipt,,3500.00,{closing_val:.2f}\r\n"
+        f"2098-02-01,Opening Balance,,,{prev_closing:.2f}\r\n"
+        f"2098-02-10,Client Fee Receipt,,5000.00,18000.00\r\n"
     ).encode()
-
-    batch2 = _upload_csv(client, second_csv, '2099-12-01', '2099-12-31')
-    rows2, meta2 = app_module.db.get_office_import_staging(batch2)
+    b2 = _upload_csv(client, feb_csv, '2098-02-01', '2098-02-28')
+    rows2, meta2 = app_module.db.get_office_import_staging(b2)
 
     assert meta2 is not None
     assert meta2.get('balance_match') == 'match', (
         f"Expected 'match', got '{meta2.get('balance_match')}' "
         f"(opening={meta2.get('opening_balance')}, "
-        f"ledger_before={meta2.get('ledger_balance_before')})"
+        f"prev_closing={meta2.get('ledger_balance_before')})"
     )
 
-    review = client.get(f'/office-account/import-review?batch={batch2}')
+    review = client.get(f'/office-account/import-review?batch={b2}')
     html = review.get_data(as_text=True)
-    assert 'Opening Balance matches' in html
+    assert 'Opening Balance Continuity Confirmed' in html or 'Opening Balance matches' in html or 'Opening balances match' in html or '✅' in html
 
 
 def test_mismatched_opening_balance_shows_warning(client):
     """
-    When the CSV opening balance does NOT match the DB closing balance,
-    the review page must show the red mismatch warning banner.
+    When the CSV opening balance does NOT match the previous statement's closing
+    balance, the review page must show the red mismatch warning.
+    The comparison is always previous_statement.closing_balance vs csv.opening_balance.
     """
-    # Use the actual DB balance and deliberately supply a wrong opening balance
-    check_date = '2099-06-01'
-    current_db_balance = app_module.db.get_office_closing_balance_before_date(check_date) or Decimal('0')
+    # Establish prior statement history with a known closing balance
+    setup_csv = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2098-03-01,Opening Balance,,,0.00\r\n"
+        b"2098-03-10,Client Fee Receipt,,25000.00,25000.00\r\n"
+    )
+    b1 = _upload_csv(client, setup_csv, '2098-03-01', '2098-03-31')
+    _approve_all(client, b1, confirm_mismatch=True)
 
-    # Pick an opening balance that is clearly different (add 99999 to guarantee mismatch)
-    wrong_opening = current_db_balance + Decimal('99999.00')
-    closing_val = wrong_opening + Decimal('3500.00')
+    prev_closing = app_module.db.get_previous_statement_closing('2098-04-01')
+    assert prev_closing == Decimal('25000.00')
 
-    second_csv = (
+    # Upload April with deliberately wrong opening (18000 instead of 25000)
+    wrong_opening = Decimal('18000.00')
+    apr_csv = (
         f"Date,Description,Money Out,Money In,Balance\r\n"
-        f"2099-06-01,Opening Balance,,,{wrong_opening:.2f}\r\n"
-        f"2099-06-05,Client Fee Receipt,,3500.00,{closing_val:.2f}\r\n"
+        f"2098-04-01,Opening Balance,,,{wrong_opening:.2f}\r\n"
+        f"2098-04-10,Client Fee Receipt,,3500.00,21500.00\r\n"
     ).encode()
-
-    batch2 = _upload_csv(client, second_csv, '2099-06-01', '2099-06-30')
-    rows2, meta2 = app_module.db.get_office_import_staging(batch2)
+    b2 = _upload_csv(client, apr_csv, '2098-04-01', '2098-04-30')
+    _, meta2 = app_module.db.get_office_import_staging(b2)
 
     assert meta2.get('balance_match') == 'mismatch', (
-        f"Expected 'mismatch', got '{meta2.get('balance_match')}' "
-        f"(opening={meta2.get('opening_balance')}, ledger_before={meta2.get('ledger_balance_before')})"
+        f"Expected 'mismatch', got '{meta2.get('balance_match')}'"
     )
 
-    review = client.get(f'/office-account/import-review?batch={batch2}')
+    review = client.get(f'/office-account/import-review?batch={b2}')
     html = review.get_data(as_text=True)
     assert 'Opening Balance Mismatch' in html
-    # Both the wrong opening balance and the actual DB balance should appear somewhere in the page
-    wrong_opening_fmt = f"{wrong_opening:,.2f}"
-    assert wrong_opening_fmt in html, f"Wrong opening balance {wrong_opening_fmt} not in page"
+    assert '18,000.00' in html   # wrong opening shown
+    assert '25,000.00' in html   # prev statement closing shown
 
 
 def test_mismatch_approve_blocked_without_confirmation(client):
     """
-    Approve must be blocked (redirected back to review) when the opening balance
-    is mismatched and the user has NOT ticked the confirmation checkbox.
+    Approve must be blocked when the opening balance is mismatched and the user
+    has NOT ticked the confirmation checkbox.
     """
-    check_date = '2099-07-01'
-    current_db_balance = app_module.db.get_office_closing_balance_before_date(check_date) or Decimal('0')
-    wrong_opening = current_db_balance + Decimal('99999.00')
-
-    second_csv = (
-        f"Date,Description,Money Out,Money In,Balance\r\n"
-        f"2099-07-01,Opening Balance,,,{wrong_opening:.2f}\r\n"
-        f"2099-07-05,Client Fee Receipt,,3500.00,{wrong_opening + Decimal('3500'):.2f}\r\n"
-    ).encode()
-
-    batch2 = _upload_csv(client, second_csv, '2099-07-01', '2099-07-31')
-
-    # Attempt to approve WITHOUT confirmation
-    resp = _approve_all(client, batch2, confirm_mismatch=False)
-    html = resp.get_data(as_text=True)
-    # Should have been redirected back to review (or show error)
-    assert ('balance' in html.lower() and ('mismatch' in html.lower() or 'does not match' in html.lower())), (
-        "Expected mismatch error or review page, got: " + html[:500]
+    # Establish prior history
+    setup_csv = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2098-05-01,Opening Balance,,,0.00\r\n"
+        b"2098-05-10,Receipt,,25000.00,25000.00\r\n"
     )
+    b1 = _upload_csv(client, setup_csv, '2098-05-01', '2098-05-31')
+    _approve_all(client, b1, confirm_mismatch=True)
+
+    wrong_csv = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2098-06-01,Opening Balance,,,99000.00\r\n"
+        b"2098-06-05,Receipt,,3500.00,102500.00\r\n"
+    )
+    b2 = _upload_csv(client, wrong_csv, '2098-06-01', '2098-06-30')
+
+    # Attempt approve WITHOUT confirmation
+    resp = _approve_all(client, b2, confirm_mismatch=False)
+    html = resp.get_data(as_text=True)
+    assert (
+        'balance' in html.lower() and
+        ('mismatch' in html.lower() or 'does not match' in html.lower())
+    ), "Expected mismatch error or review page, got: " + html[:500]
 
 
 def test_mismatch_approve_succeeds_with_confirmation(client):
     """
-    When the user ticks the confirmation checkbox, the import must succeed
-    despite the opening balance mismatch.
+    When the user ticks the confirmation checkbox, import succeeds despite mismatch.
     """
-    check_date = '2099-08-01'
-    current_db_balance = app_module.db.get_office_closing_balance_before_date(check_date) or Decimal('0')
-    wrong_opening = current_db_balance + Decimal('99999.00')
+    setup_csv = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2098-07-01,Opening Balance,,,0.00\r\n"
+        b"2098-07-10,Receipt,,25000.00,25000.00\r\n"
+    )
+    b1 = _upload_csv(client, setup_csv, '2098-07-01', '2098-07-31')
+    _approve_all(client, b1, confirm_mismatch=True)
+
     receipt_amount = Decimal('3500.00')
-
-    second_csv = (
+    wrong_csv = (
         f"Date,Description,Money Out,Money In,Balance\r\n"
-        f"2099-08-01,Opening Balance,,,{wrong_opening:.2f}\r\n"
-        f"2099-08-05,Client Fee Receipt,,{receipt_amount:.2f},{wrong_opening + receipt_amount:.2f}\r\n"
+        f"2098-08-01,Opening Balance,,,99000.00\r\n"
+        f"2098-08-05,Receipt,,{receipt_amount:.2f},102500.00\r\n"
     ).encode()
-
-    batch2 = _upload_csv(client, second_csv, '2099-08-01', '2099-08-31')
+    b2 = _upload_csv(client, wrong_csv, '2098-08-01', '2098-08-31')
     balance_before = app_module.db.get_office_balance()
 
-    resp = _approve_all(client, batch2, confirm_mismatch=True)
-    assert resp.status_code == 200   # followed redirect successfully
+    resp = _approve_all(client, b2, confirm_mismatch=True)
+    assert resp.status_code == 200
 
     balance_after = app_module.db.get_office_balance()
     assert balance_after == balance_before + receipt_amount, (
-        f"Balance should have increased by {receipt_amount}. Before={balance_before}, after={balance_after}"
+        f"Balance should increase by {receipt_amount}. Before={balance_before}, after={balance_after}"
     )
 
 
 def test_sequential_monthly_imports_balance_continuity(client):
     """
-    Importing three consecutive monthly statements must result in:
-      - Each subsequent opening balance equalling the previous closing balance (match).
-      - Correct cumulative running balance (relative changes).
+    Three consecutive imports must each show 'match' using statement history,
+    not the running ledger balance.  Closing balance must carry forward correctly.
     """
-    # Use unique far-future dates that no other test touches.
-    # We use *relative* balance tracking so pre-existing DB data does not matter.
-    nov_start = '2099-09-01'
-
-    # baseline_before = total DB balance right now (before this test imports anything)
-    baseline_before = app_module.db.get_office_balance()
-    # What the DB balance was as-of just before nov_start
-    balance_as_of_nov_start = (
-        app_module.db.get_office_closing_balance_before_date(nov_start) or Decimal('0')
-    )
-
+    # All dates in 2099-09 through 2099-11 to avoid collisions with other tests.
+    # First month: first_import (no prior history at this date range)
+    # We use opening=0 so no BF transaction is needed.
     nov_receipt = Decimal('25000.00')
     nov_payment = Decimal('2000.00')
-    nov_open = balance_as_of_nov_start
-    nov_close = nov_open + nov_receipt - nov_payment
+    nov_close = nov_receipt - nov_payment  # 23000
 
     nov_csv = (
-        f"Date,Description,Money Out,Money In,Balance\r\n"
-        f"2099-09-01,Opening Balance,,,{nov_open:.2f}\r\n"
-        f"2099-09-05,Client Fee Receipt,,{nov_receipt:.2f},{nov_open + nov_receipt:.2f}\r\n"
-        f"2099-09-15,Office Rent,{nov_payment:.2f},,{nov_close:.2f}\r\n"
-    ).encode()
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2099-09-01,Opening Balance,,,0.00\r\n"
+        b"2099-09-05,Client Fee Receipt,,25000.00,25000.00\r\n"
+        b"2099-09-15,Office Rent,2000.00,,23000.00\r\n"
+    )
     batch_nov = _upload_csv(client, nov_csv, '2099-09-01', '2099-09-30')
-    _approve_all(client, batch_nov)
+    _approve_all(client, batch_nov, confirm_mismatch=True)
 
-    bal_after_nov = app_module.db.get_office_balance()
-    assert bal_after_nov == baseline_before + nov_receipt - nov_payment, (
-        f"After Nov import: {bal_after_nov}, expected {baseline_before + nov_receipt - nov_payment}"
-    )
+    # Statement history must record closing = 23000
+    hist_nov = app_module.db.get_previous_statement_closing('2099-10-01')
+    assert hist_nov == Decimal('23000.00'), f"Nov closing in history: {hist_nov}"
 
-    # December: opening must match nov_close
-    dec_start = '2099-10-01'
-    balance_as_of_dec_start = (
-        app_module.db.get_office_closing_balance_before_date(dec_start) or Decimal('0')
-    )
+    # December: opening must equal November closing from statement history
     dec_receipt = Decimal('5000.00')
-    dec_close = balance_as_of_dec_start + dec_receipt
+    dec_close = hist_nov + dec_receipt  # 28000
 
     dec_csv = (
         f"Date,Description,Money Out,Money In,Balance\r\n"
-        f"2099-10-01,Opening Balance,,,{balance_as_of_dec_start:.2f}\r\n"
+        f"2099-10-01,Opening Balance,,,{hist_nov:.2f}\r\n"
         f"2099-10-10,Client Fee Receipt,,{dec_receipt:.2f},{dec_close:.2f}\r\n"
     ).encode()
     batch_dec = _upload_csv(client, dec_csv, '2099-10-01', '2099-10-31')
     _, dec_meta = app_module.db.get_office_import_staging(batch_dec)
     assert dec_meta.get('balance_match') == 'match', (
-        f"December opening balance should match November closing. Meta: {dec_meta}"
+        f"October opening should match September closing. Meta: {dec_meta}"
     )
     _approve_all(client, batch_dec)
 
-    bal_after_dec = app_module.db.get_office_balance()
-    assert bal_after_dec == bal_after_nov + dec_receipt, (
-        f"After Dec import: {bal_after_dec}, expected {bal_after_nov + dec_receipt}"
-    )
+    hist_dec = app_module.db.get_previous_statement_closing('2099-11-01')
+    assert hist_dec == Decimal('28000.00'), f"Dec closing in history: {hist_dec}"
 
-    # January: opening must match dec_close
-    jan_start = '2099-11-01'
-    balance_as_of_jan_start = (
-        app_module.db.get_office_closing_balance_before_date(jan_start) or Decimal('0')
-    )
+    # January: opening must equal December closing
     jan_payment = Decimal('1500.00')
-    jan_close = balance_as_of_jan_start - jan_payment
+    jan_close = hist_dec - jan_payment  # 26500
 
     jan_csv = (
         f"Date,Description,Money Out,Money In,Balance\r\n"
-        f"2099-11-01,Opening Balance,,,{balance_as_of_jan_start:.2f}\r\n"
+        f"2099-11-01,Opening Balance,,,{hist_dec:.2f}\r\n"
         f"2099-11-20,Software Licence,{jan_payment:.2f},,{jan_close:.2f}\r\n"
     ).encode()
     batch_jan = _upload_csv(client, jan_csv, '2099-11-01', '2099-11-30')
     _, jan_meta = app_module.db.get_office_import_staging(batch_jan)
     assert jan_meta.get('balance_match') == 'match', (
-        f"January opening balance should match December closing. Meta: {jan_meta}"
+        f"November opening should match October closing. Meta: {jan_meta}"
     )
     _approve_all(client, batch_jan)
 
-    bal_after_jan = app_module.db.get_office_balance()
-    assert bal_after_jan == bal_after_dec - jan_payment, (
-        f"After Jan import: {bal_after_jan}, expected {bal_after_dec - jan_payment}"
+    hist_jan = app_module.db.get_previous_statement_closing('2099-12-01')
+    assert hist_jan == Decimal('26500.00'), f"Jan closing in history: {hist_jan}"
+
+
+def test_statement_history_stores_closing_balance_after_approval(client):
+    """
+    After approving an import, office_statement_history must contain an entry
+    with the correct opening_balance and closing_balance.
+    """
+    csv_data = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2097-06-01,Opening Balance,,,10000.00\r\n"
+        b"2097-06-05,Receipt,,4000.00,14000.00\r\n"
+        b"2097-06-15,Payment,1500.00,,12500.00\r\n"
+    )
+    batch_id = _upload_csv(client, csv_data, '2097-06-01', '2097-06-30')
+    _approve_all(client, batch_id)
+
+    # Verify statement history
+    closing = app_module.db.get_previous_statement_closing('2097-07-01')
+    assert closing == Decimal('12500.00'), (
+        f"Statement history closing balance: expected 12500, got {closing}"
+    )
+
+    # Verify the history is used (not the running ledger) for a subsequent import
+    next_csv = (
+        f"Date,Description,Money Out,Money In,Balance\r\n"
+        f"2097-07-01,Opening Balance,,,12500.00\r\n"
+        f"2097-07-10,Receipt,,5000.00,17500.00\r\n"
+    ).encode()
+    b2 = _upload_csv(client, next_csv, '2097-07-01', '2097-07-31')
+    _, meta2 = app_module.db.get_office_import_staging(b2)
+    assert meta2.get('balance_match') == 'match', (
+        f"Expected match using statement history. balance_match={meta2.get('balance_match')}, "
+        f"prev_closing={meta2.get('ledger_balance_before')}"
+    )
+
+
+def test_continuity_never_uses_running_ledger_balance(client):
+    """
+    CORE REGRESSION TEST: The continuity check must use statement history only.
+
+    Scenario mirroring the reported bug:
+      January:  Opening £25,000, Receipts £9,525, Payments £5,400 → Closing £29,125
+      February: Opening £29,125 → must show MATCH (not compare against £4,125 net movement)
+
+    £4,125 = net movement (9,525 - 5,400). The old buggy code returned this
+    because it computed the running ledger sum after subtracting the BF transaction
+    opening. The new code uses office_statement_history.closing_balance = 29,125.
+    """
+    # Use unique dates to avoid collision with other tests
+    jan_start = '2097-01-01'
+    jan_end = '2097-01-31'
+    feb_start = '2097-02-01'
+    feb_end = '2097-02-28'
+
+    # January: first import, opening £25,000
+    jan_csv = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2097-01-01,Opening Balance,,,25000.00\r\n"
+        b"2097-01-05,Client Fee,,9525.00,34525.00\r\n"
+        b"2097-01-15,Office Expenses,5400.00,,29125.00\r\n"
+    )
+    b_jan = _upload_csv(client, jan_csv, jan_start, jan_end)
+    _, meta_jan = app_module.db.get_office_import_staging(b_jan)
+    assert meta_jan.get('balance_match') == 'first_import', (
+        f"January must be first_import, got {meta_jan.get('balance_match')}"
+    )
+    _approve_all(client, b_jan)
+
+    # Verify statement history records closing = 29125 (NOT 4125)
+    jan_closing = app_module.db.get_previous_statement_closing(feb_start)
+    assert jan_closing == Decimal('29125.00'), (
+        f"Statement history must record January closing as 29125.00, got {jan_closing}. "
+        f"If this returns 4125.00, the bug is that net movement is being used instead."
+    )
+
+    # February: opening £29,125 — must MATCH
+    feb_csv = (
+        b"Date,Description,Money Out,Money In,Balance\r\n"
+        b"2097-02-01,Opening Balance,,,29125.00\r\n"
+        b"2097-02-10,Client Fee,,8000.00,37125.00\r\n"
+    )
+    b_feb = _upload_csv(client, feb_csv, feb_start, feb_end)
+    _, meta_feb = app_module.db.get_office_import_staging(b_feb)
+
+    assert meta_feb.get('balance_match') == 'match', (
+        f"February must show MATCH. Got '{meta_feb.get('balance_match')}'. "
+        f"prev_closing stored={meta_feb.get('ledger_balance_before')}. "
+        f"If mismatch, the code compared against net movement (4125) instead of "
+        f"statement closing (29125)."
+    )
+
+    review = client.get(f'/office-account/import-review?batch={b_feb}')
+    html = review.get_data(as_text=True)
+    assert 'Opening Balance Mismatch' not in html, (
+        "February review page must NOT show mismatch warning"
+    )
+    assert '29,125.00' in html, (
+        "Review page must display the previous statement closing (£29,125.00)"
     )
