@@ -14,6 +14,7 @@ Each returned row dict:
     transaction_type  str  'Receipt' or 'Payment'
     balance         Decimal or None  (running balance from statement, if present)
     row_number      int  (1-based source file row, for tracing)
+    source          str  auto-detected: 'Cheque' | 'Card' | 'Cash' | 'Bank Transfer'
 
 parse_office_statement() returns a ParseResult named-tuple:
     rows             list of transaction dicts (balance-marker rows excluded)
@@ -183,6 +184,58 @@ def _is_opening_balance_row(description: str) -> bool:
 
 def _is_closing_balance_row(description: str) -> bool:
     return _norm(description) in _CLOSING_BALANCE_NORMS
+
+
+# ---------------------------------------------------------------------------
+# Payment source auto-detection
+# ---------------------------------------------------------------------------
+#
+# Priority: Cheque > Card > Cash > Bank Transfer (default)
+# Detection is case-insensitive and examines both description and reference.
+
+_CHEQUE_RE = re.compile(
+    r'\b(?:CHEQUE|CHEQ|CHQ|CHECK)\b',
+    re.IGNORECASE,
+)
+
+_CARD_RE = re.compile(
+    r'\b(?:'
+    r'VISA|MASTERCARD|MASTER\s+CARD|MAESTRO|AMEX|AMERICAN\s+EXPRESS'
+    r'|DEBIT\s+CARD|CREDIT\s+CARD|CARD\s+PURCHASE|CARD\s+PAYMENT|CARD\s+TRANSACTION'
+    r'|CONTACTLESS|CHIP\s*(?:AND|&)\s*PIN'
+    r'|PAYZONE|PAYPOINT'
+    r'|POS'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# CASHBACK before CASH so the shorter pattern never short-circuits the longer.
+# ATM covers cash-machine withdrawals.
+_CASH_RE = re.compile(
+    r'\b(?:CASHBACK|ATM|CASH)\b',
+    re.IGNORECASE,
+)
+
+
+def detect_source(description: str, reference: str) -> str:
+    """
+    Infer the most likely payment source from a transaction's description and
+    reference fields.  Case-insensitive.
+
+    Priority (highest first):
+      Cheque       — "Cheque", "CHQ", "Check", "CHEQ"
+      Card         — Visa, Mastercard, POS, Contactless, Debit Card, etc.
+      Cash         — Cash, ATM, Cashback
+      Bank Transfer — default for BACS, CHAPS, FPS, Direct Debit, etc.
+    """
+    text = (description or '') + ' ' + (reference or '')
+    if _CHEQUE_RE.search(text):
+        return 'Cheque'
+    if _CARD_RE.search(text):
+        return 'Card'
+    if _CASH_RE.search(text):
+        return 'Cash'
+    return 'Bank Transfer'
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +421,7 @@ def _make_row(date: str, description: str, reference: str,
         'transaction_type': t_type,
         'balance': balance,
         'row_number': row_number,
+        'source': detect_source(description, reference),
     }
 
 

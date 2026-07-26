@@ -1,6 +1,7 @@
 """
 Office Account bank statement import — end-to-end tests.
-Covers: parse, stage, review, approve, cancel, duplicate detection.
+Covers: parse, stage, review, approve, cancel, duplicate detection,
+        source auto-detection.
 Verifies that client ledger / cashbook / reconciliation data is NEVER touched.
 """
 import io
@@ -12,7 +13,7 @@ import pytest
 
 import app as app_module
 from app import app
-from lib.office_import import parse_office_statement, parse_office_csv, ParseResult
+from lib.office_import import parse_office_statement, parse_office_csv, ParseResult, detect_source
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,141 @@ def test_unsupported_extension():
     result = parse_office_statement(b'data', 'statement.ofx')
     assert result.error is not None
     assert 'csv' in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# detect_source unit tests
+# ---------------------------------------------------------------------------
+
+def test_detect_source_cheque_variants():
+    """All common cheque indicators are mapped to Cheque."""
+    for desc in ('Cheque 000123', 'CHQ 456', 'CHEQ No 789', 'Paid by Check'):
+        assert detect_source(desc, '') == 'Cheque', (
+            f"Expected Cheque for description '{desc}'"
+        )
+
+def test_detect_source_cheque_in_reference():
+    assert detect_source('Payment', 'CHQ 001234') == 'Cheque'
+
+def test_detect_source_card_variants():
+    """Common card indicators are mapped to Card."""
+    for desc in (
+        'VISA PAYMENT', 'Mastercard Purchase', 'POS TRANSACTION',
+        'Contactless Payment', 'Debit Card Purchase', 'CHIP AND PIN',
+        'PAYPOINT 00123',
+    ):
+        assert detect_source(desc, '') == 'Card', (
+            f"Expected Card for description '{desc}'"
+        )
+
+def test_detect_source_cash_variants():
+    """Cash / ATM indicators are mapped to Cash."""
+    for desc in ('ATM Withdrawal', 'Cash Deposit', 'CASHBACK', 'Petty Cash'):
+        assert detect_source(desc, '') == 'Cash', (
+            f"Expected Cash for description '{desc}'"
+        )
+
+def test_detect_source_bank_transfer_default():
+    """BACS, CHAPS, FPS, Direct Debit all fall back to Bank Transfer."""
+    for desc in (
+        'BACS Payment', 'CHAPS Transfer', 'Faster Payment',
+        'Direct Debit', 'Standing Order', 'Salary Payment',
+        'HMRC VAT', 'Rent Receipt',
+    ):
+        assert detect_source(desc, '') == 'Bank Transfer', (
+            f"Expected Bank Transfer for description '{desc}'"
+        )
+
+def test_detect_source_priority_cheque_over_card():
+    """If both cheque and card keywords appear, Cheque wins (higher priority)."""
+    assert detect_source('Cheque VISA', '') == 'Cheque'
+
+def test_detect_source_case_insensitive():
+    assert detect_source('cheque payment', '') == 'Cheque'
+    assert detect_source('visa debit', '') == 'Card'
+    assert detect_source('atm cash', '') == 'Cash'
+
+def test_detect_source_empty_fields():
+    """Empty / None fields default to Bank Transfer without error."""
+    assert detect_source('', '') == 'Bank Transfer'
+    assert detect_source(None, None) == 'Bank Transfer'
+
+def test_detect_source_no_false_positives():
+    """Words containing 'cash' or 'pos' as substrings must not trigger false matches."""
+    # 'POSITIVE', 'DISPOSAL', 'CASHFLOW', 'COMPOSER' must not match
+    assert detect_source('Cashflow Analysis', '') == 'Bank Transfer', (
+        "'Cashflow' should not trigger Cash (no \\b boundary after CASH)"
+    )
+    assert detect_source('Disposal of Assets', '') == 'Bank Transfer', (
+        "'Disposal' should not trigger Card (POS is substring)"
+    )
+    assert detect_source('Composite Rate', '') == 'Bank Transfer'
+
+
+def test_parser_rows_include_source_field():
+    """Every parsed transaction row must include a 'source' field."""
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2024-01-01,Cheque Payment,-500.00\n'
+        '2024-01-02,VISA Purchase,-120.00\n'
+        '2024-01-03,ATM Cash,-50.00\n'
+        '2024-01-04,BACS Receipt,1000.00\n'
+    )
+    result = parse_office_statement(csv_data, 'test.csv')
+    assert result.error is None
+    for row in result.rows:
+        assert 'source' in row, f"Row missing 'source' field: {row}"
+
+
+def test_parser_source_detection_end_to_end():
+    """The parser correctly detects sources from real description text."""
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2024-01-01,Cheque Payment Rent,-1500.00\n'
+        '2024-01-02,VISA Debit Card Purchase,-80.00\n'
+        '2024-01-03,ATM Withdrawal Cash,-200.00\n'
+        '2024-01-04,BACS Salary Payment,3000.00\n'
+    )
+    result = parse_office_statement(csv_data, 'test.csv')
+    assert result.error is None
+    rows = result.rows
+    # Payments are negated — but source detection is on description
+    sources = {r['description']: r['source'] for r in rows}
+    assert sources.get('Cheque Payment Rent') == 'Cheque'
+    assert sources.get('VISA Debit Card Purchase') == 'Card'
+    assert sources.get('ATM Withdrawal Cash') == 'Cash'
+    assert sources.get('BACS Salary Payment') == 'Bank Transfer'
+
+
+def test_review_page_pre_selects_detected_source(client):
+    """
+    When a CSV with mixed payment types is uploaded, the review page must
+    pre-select the detected source in each row's dropdown.
+    """
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2024-02-01,Cheque No 000456,-800.00\n'
+        '2024-02-02,Visa Contactless,-45.00\n'
+        '2024-02-03,BACS Transfer,2000.00\n'
+    )
+    up = client.post(
+        '/office-account/import-statement',
+        data={'statement_file': (io.BytesIO(csv_data), 'sources.csv')},
+        content_type='multipart/form-data',
+    )
+    batch_id = up.headers.get('Location', '').split('batch=')[-1]
+    html = client.get(f'/office-account/import-review?batch={batch_id}').get_data(as_text=True)
+
+    # The source column HTML for Cheque row must have Cheque selected
+    assert 'value="Cheque" selected' in html or 'value="Cheque"  selected' in html or \
+           'Cheque" selected' in html, "Cheque source must be pre-selected"
+
+    # BACS row must have Bank Transfer selected (default)
+    assert 'value="Bank Transfer" selected' in html or \
+           'Bank Transfer"  selected' in html or \
+           'Bank Transfer" selected' in html, "Bank Transfer must appear as selected"
+
+    client.post('/office-account/import-cancel', data={'batch_id': batch_id})
 
 
 # ---------------------------------------------------------------------------

@@ -2874,7 +2874,7 @@ class Database:
                         row.get('reference', ''),
                         str(row['amount']),
                         row['transaction_type'],
-                        'Bank Transfer',
+                        row.get('source') or 'Bank Transfer',
                         1 if row.get('is_duplicate') else 0,
                         created_by,
                         ob_str,

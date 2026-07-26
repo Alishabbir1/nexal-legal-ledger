@@ -334,10 +334,10 @@
                                            border: 1px solid var(--border-subtle); border-radius: 4px;
                                            background: var(--bg-elevated); color: var(--text-primary);"
                                     onchange="onSourceChange(this)">
-                                <option value="Bank Transfer" selected>Bank Transfer</option>
-                                <option value="Cash">Cash</option>
-                                <option value="Cheque">Cheque</option>
-                                <option value="Card">Card</option>
+                                <option value="Bank Transfer"{% if row.source == 'Bank Transfer' or not row.source %} selected{% endif %}>Bank Transfer</option>
+                                <option value="Cash"{% if row.source == 'Cash' %} selected{% endif %}>Cash</option>
+                                <option value="Cheque"{% if row.source == 'Cheque' %} selected{% endif %}>Cheque</option>
+                                <option value="Card"{% if row.source == 'Card' %} selected{% endif %}>Card</option>
                             </select>
                             {% endif %}
                         </td>
@@ -687,9 +687,14 @@
 
     /* ── Initial render ──────────────────────────────────────────── */
     updateCount();
-    // Initialize cleared labels
+    // Apply cleared-label state for every row
     document.querySelectorAll('.cleared-check').forEach(function(cb) {
         onClearedChange(cb);
+    });
+    // Apply source-specific behaviour (e.g. Cheque disables Cleared checkbox)
+    // for rows where the parser auto-detected a non-default source.
+    document.querySelectorAll('.source-select').forEach(function(sel) {
+        onSourceChange(sel);
     });
 })();
 </script>
