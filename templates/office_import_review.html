@@ -380,13 +380,23 @@
                 {{ rows|length }} row(s) selected
             </span>
             <div style="flex: 1;"></div>
-            <form method="POST" action="{{ url_for('office_import_cancel') }}" style="margin: 0;">
-                <input type="hidden" name="batch_id" value="{{ batch_id }}">
-                <button type="submit" class="btn btn-secondary"
-                        onclick="return confirm('Cancel this import? All staged rows will be discarded.');">
-                    Cancel Import
-                </button>
-            </form>
+            {#
+              IMPORTANT: Do NOT nest a <form> here.  HTML forbids nested forms;
+              browsers silently ignore the inner form and submit the outer
+              (approve) form instead — which is exactly the cancel-commits-data
+              bug.  Instead, use formaction on a plain submit button so the
+              browser POSTs batch_id to the cancel route while staying inside
+              a single valid form element.  The JS submit handler detects
+              e.submitter.id === 'cancelBottomBtn' and skips approve-path
+              validation for this case.
+            #}
+            <button type="submit"
+                    id="cancelBottomBtn"
+                    class="btn btn-secondary"
+                    formaction="{{ url_for('office_import_cancel') }}"
+                    onclick="return confirm('Cancel this import? All staged rows will be discarded.');">
+                Cancel Import
+            </button>
         </div>
     </form>
 </div>
@@ -643,6 +653,13 @@
     var form = document.getElementById('approveForm');
     if (form && approveBtn) {
         form.addEventListener('submit', function (e) {
+            // The bottom Cancel button uses formaction so it submits this form
+            // to the cancel route instead of the approve route.  Skip all
+            // approve-path validation when that button is the submitter.
+            if (e.submitter && e.submitter.id === 'cancelBottomBtn') {
+                return; // proceed directly to cancel route — no validation needed
+            }
+
             var checked = document.querySelectorAll('.row-keep:checked').length;
             if (checked === 0) {
                 e.preventDefault();

@@ -238,6 +238,125 @@ def test_cancel_import_deletes_staging(client):
     assert rows2 == []
 
 
+def test_review_page_has_no_nested_forms(client):
+    """
+    Structural regression test: the review page must not contain nested <form>
+    elements.  HTML forbids nesting forms; browsers ignore the inner form and
+    treat its submit button as a submit of the outer form.  If the cancel form
+    at the bottom of the page is nested inside the approve form, clicking
+    'Cancel Import' would submit the approve form and commit transactions —
+    exactly the critical bug this test guards against.
+    """
+    csv_data = _csv('Date,Description,Amount\n2024-05-01,Test,100.00\n')
+    up = client.post(
+        '/office-account/import-statement',
+        data={'statement_file': (io.BytesIO(csv_data), 'nested_form_test.csv')},
+        content_type='multipart/form-data',
+    )
+    batch_id = up.headers.get('Location', '').split('batch=')[-1]
+    assert batch_id
+
+    html = client.get(f'/office-account/import-review?batch={batch_id}').get_data(as_text=True)
+
+    # Count <form and </form> tags within the approve form boundaries
+    approve_start = html.find('id="approveForm"')
+    approve_end   = html.find('</form>', approve_start)
+    assert approve_start != -1, "approveForm must exist on review page"
+    assert approve_end   != -1, "approveForm must have closing tag"
+
+    section = html[approve_start:approve_end]
+    nested_form_count = section.lower().count('<form')
+    assert nested_form_count == 0, (
+        f"The approve form must NOT contain nested <form> elements. "
+        f"Found {nested_form_count} nested <form> tag(s). "
+        "A nested cancel form causes 'Cancel Import' to submit the approve form, "
+        "committing transactions when the user expected to cancel."
+    )
+
+    # The bottom cancel button must use formaction (not a nested form)
+    assert 'cancelBottomBtn' in html, "cancelBottomBtn must exist on review page"
+    assert 'formaction' in html, "cancel button must use formaction attribute"
+
+    # Clean up staging
+    client.post('/office-account/import-cancel', data={'batch_id': batch_id})
+
+
+def test_bottom_cancel_button_uses_cancel_route_not_approve_route(client):
+    """
+    Simulate what the browser does when the user clicks the bottom 'Cancel Import'
+    button.  With formaction, the browser POSTs batch_id to the cancel route.
+    Verify that the cancel route:
+      - deletes staging
+      - does NOT create any office_cashbook rows
+      - does NOT create any statement history
+      - does NOT write any audit entries
+    This is the programmatic equivalent of clicking Cancel in the browser.
+    """
+    csv_data = _csv(
+        'Date,Description,Amount\n'
+        '2024-08-01,Test Receipt,500.00\n'
+        '2024-08-02,Test Payment,-200.00\n'
+    )
+    up = client.post(
+        '/office-account/import-statement',
+        data={'statement_file': (io.BytesIO(csv_data), 'cancel_route_test.csv')},
+        content_type='multipart/form-data',
+    )
+    batch_id = up.headers.get('Location', '').split('batch=')[-1]
+    rows, _ = app_module.db.get_office_import_staging(batch_id)
+    assert len(rows) == 2
+
+    cb_before  = len(app_module.db.get_office_transactions() or [])
+    bal_before = app_module.db.get_office_balance()
+    audit_before = _audit_count()
+
+    # Simulate the browser submitting approveForm to the cancel route via formaction.
+    # The browser sends ALL approve-form fields to the cancel route; cancel only
+    # reads batch_id and ignores everything else.
+    approve_form_data = {
+        'batch_id': batch_id,
+    }
+    for row in rows:
+        rid = str(row['id'])
+        approve_form_data[f'keep_{rid}']           = 'on'
+        approve_form_data[f'ref_{rid}']            = 'Test Ref'
+        approve_form_data[f'desc_{rid}']           = 'Test Desc'
+        approve_form_data[f'source_{rid}']         = 'Bank Transfer'
+        approve_form_data[f'cleared_{rid}']        = 'on'
+        approve_form_data[f'cleared_present_{rid}'] = '1'
+        approve_form_data[f'amount_{rid}']         = str(row['amount'])
+        approve_form_data[f'date_{rid}']           = row['transaction_date']
+
+    # POST the entire approve-form payload to the CANCEL route (as formaction does)
+    resp = client.post('/office-account/import-cancel', data=approve_form_data)
+    assert resp.status_code == 302
+    assert 'office-account' in resp.headers.get('Location', '')
+
+    # Staging must be deleted
+    rows2, _ = app_module.db.get_office_import_staging(batch_id)
+    assert rows2 == [], "Staging must be deleted after cancel (bottom button)"
+
+    # office_cashbook must be unchanged
+    cb_after = len(app_module.db.get_office_transactions() or [])
+    assert cb_after == cb_before, (
+        f"office_cashbook must not change after cancel. "
+        f"Before={cb_before}, After={cb_after}"
+    )
+
+    # Balance unchanged
+    assert app_module.db.get_office_balance() == bal_before, (
+        "Balance must not change after cancel"
+    )
+
+    # Statement history unchanged (fixture clears it each test)
+    assert app_module.db.get_previous_statement_closing('2024-09-01') is None
+
+    # No new audit entries
+    assert _audit_count() == audit_before, (
+        "Cancel must write zero audit entries"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workflow correctness: the review screen is a staging-only preview.
 # Nothing is committed until the user explicitly clicks "Approve Import".
