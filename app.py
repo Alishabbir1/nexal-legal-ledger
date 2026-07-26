@@ -4,6 +4,9 @@ Flask-based web interface for browser access
 """
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, session
+from flask_wtf.csrf import CSRFProtect, CSRFError
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from decimal import Decimal
 from datetime import datetime
 import sys
@@ -101,6 +104,20 @@ validate_production_secrets(
 app = _app
 app.secret_key = _flask_secret
 app.config['PERMANENT_SESSION_LIFETIME'] = 900  # 15 minutes inactivity
+app.config['WTF_CSRF_TIME_LIMIT'] = 3600       # 1 hour CSRF token validity
+
+# CSRF protection — covers all state-changing POST/PUT/PATCH/DELETE forms.
+# API/SSO endpoints that are called machine-to-machine are exempt via decorator.
+csrf = CSRFProtect(app)
+
+# Rate limiting — memory-backed, single-process storage is sufficient for
+# a desktop / small-firm deployment.  Adjust storage_uri for Redis in cloud.
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],                # no global limit — only per-route limits
+    storage_uri="memory://",
+)
 
 # Legacy default database (single-tenant / pre-SSO)
 _legacy_db = Database()
@@ -162,9 +179,23 @@ except Exception:
 
 from firm_middleware import register_sso_routes
 register_sso_routes(app)
+# Exempt SSO/Portal callback endpoints from CSRF — they receive a signed JWT from
+# the Portal (external service) and do not go through a browser form submission.
+for _sso_ep in ('api_sso_login', 'sso_login', 'sso_logout', 'sso_status'):
+    if _sso_ep in app.view_functions:
+        csrf.exempt(app.view_functions[_sso_ep])
+# Rate-limit SSO endpoints to prevent token-stuffing/brute-force.
+for _sso_ep in ('api_sso_login', 'sso_login'):
+    if _sso_ep in app.view_functions:
+        limiter.limit("60 per minute")(app.view_functions[_sso_ep])
 
 from nexal_platform.ops_routes import register_ops_routes
 register_ops_routes(app)
+# Ops health/backup endpoints are called by the Windows Task Scheduler or monitoring
+# systems; they use their own shared-secret auth so CSRF is not applicable.
+for _vf in list(app.view_functions.values()):
+    if hasattr(_vf, '__name__') and _vf.__name__.startswith('api_ops_'):
+        csrf.exempt(_vf)
 
 LOGIN_EXEMPT_ENDPOINTS = {
     'login', 'static', 'admin_recovery', 'admin_recovery_reset', 'reset_password',
@@ -215,6 +246,13 @@ def get_dashboard_alerts(session_obj, database) -> list:
 
 def current_username() -> str:
     return session.get('username', 'System')
+
+
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    """Return a clear error when a CSRF token is missing or invalid."""
+    flash('Your session has expired or the form was submitted incorrectly. Please try again.', 'error')
+    return redirect(request.referrer or url_for('dashboard'))
 
 
 def current_role() -> str:
@@ -354,6 +392,7 @@ def require_login():
 # ---------------------------------------------------------------------------
 
 @app.route('/dev/login', methods=['GET', 'POST'])
+@limiter.limit("20 per minute")
 def dev_login():
     """
     Development-only login page.  Bypasses Portal SSO so developers can test
@@ -1004,8 +1043,10 @@ def new_cashbook_transaction():
             pre_client_balance = db.get_cleared_client_balance(client_id)
             pre_total_cashbook = db.get_total_cashbook_net_balance()
 
-            # Client-linked: create ledger transaction first, then cashbook linked to it
-            ledger_id = db.create_ledger_transaction(
+            # Atomically create both ledger and cashbook entries in one transaction.
+            # Uses create_ledger_and_cashbook_transaction which wraps both INSERTs
+            # in BEGIN IMMEDIATE and rolls back both if either fails.
+            ledger_id, cashbook_id, _ = db.create_ledger_and_cashbook_transaction(
                 client_id=client_id,
                 transaction_date=transaction_date,
                 amount=amount,
@@ -1013,21 +1054,9 @@ def new_cashbook_transaction():
                 reference=reference,
                 source=source,
                 description=description,
-                linked_cashbook_id=None,
                 created_by=current_username(),
-                allow_override=override_active
+                allow_override=override_active,
             )
-            cashbook_id = db.create_cashbook_transaction(
-                transaction_date=transaction_date,
-                amount=amount,
-                transaction_type=transaction_type,
-                reference=reference,
-                source=source,
-                description=description,
-                linked_ledger_id=ledger_id,
-                created_by=current_username()
-            )
-            db.update_ledger_linked_cashbook(ledger_id, cashbook_id)
             log_audit('Client Ledger', 'Transaction created', record_id=str(ledger_id),
                       details=f"{transaction_type} £{amount} ref {reference}")
 
@@ -1566,58 +1595,19 @@ def office_import_approve():
     # Process in chronological order so balance checks stay consistent
     kept.sort(key=lambda r: r['transaction_date'])
 
-    created = 0
-    error_msgs = []
-    for row in kept:
-        try:
-            db.create_office_transaction(
-                transaction_date=row['transaction_date'],
-                amount=row['amount'],
-                transaction_type=row['transaction_type'],
-                reference=row['reference'],
-                source=row['source'],
-                description=row['description'],
-                created_by=current_username(),
-                import_batch_id=row['import_batch_id'],
-                skip_balance_check=True,  # user reviewed and approved these rows
-                status=row.get('status'),
-            )
-            created += 1
-        except ValueError as exc:
-            error_msgs.append(
-                f"{row['transaction_date']} £{row['amount']} ({row['transaction_type']}): {exc}"
-            )
-
-    # Clean up staging regardless of outcome
-    db.delete_office_import_staging(batch_id)
-
-    # Record permanent statement history (used for continuity checks on future imports).
-    # This must happen after delete_office_import_staging and only when at least one
-    # transaction was created. statement_history is the sole source of truth for
-    # opening-balance continuity — we never use the running ledger sum for that.
-    if created and batch_meta and batch_meta.get('opening_balance') is not None:
-        # Compute actual closing from the approved (possibly edited) amounts.
-        # Exclude the BF row — it equals opening_balance and is not a statement transaction.
-        opening = Decimal(str(batch_meta['opening_balance']))
-        stmt_receipts = sum(
-            k['amount'] for k in kept
-            if k['transaction_type'] == 'Receipt'
-            and not k.get('is_balance_brought_forward')
-        )
-        stmt_payments = sum(
-            k['amount'] for k in kept
-            if k['transaction_type'] == 'Payment'
-        )
-        cb = str(opening + stmt_receipts - stmt_payments)
-        db.record_statement_history(
+    # Single atomic commit: all rows + statement history written together,
+    # staging deleted only after successful commit.
+    try:
+        created = db.approve_office_import_batch(
+            kept=kept,
             batch_id=batch_id,
-            filename=batch_meta.get('filename', ''),
-            statement_start=batch_meta.get('statement_start', ''),
-            statement_end=batch_meta.get('statement_end', ''),
-            opening_balance=batch_meta.get('opening_balance'),
-            closing_balance=cb,
+            batch_meta=batch_meta,
             approved_by=current_username(),
         )
+        error_msgs = []
+    except ValueError as exc:
+        error_msgs = [str(exc)]
+        created = 0
 
     # Write audit entry for the approval, including any per-row edits
     audit_detail = (
@@ -1638,7 +1628,7 @@ def office_import_approve():
             f'{created} transaction(s) imported into Office Account successfully.',
             'success',
         )
-    if len(error_msgs) == len(kept):
+    if error_msgs and not created:
         flash('No transactions were imported due to errors shown above.', 'error')
 
     return redirect(url_for('office_account'))
@@ -2975,8 +2965,8 @@ def export_office_expenses_pdf():
         date_from = request.args.get('date_from') or None
         date_to = request.args.get('date_to') or None
         created_by = request.args.get('created_by') or None
-        all_cashbook = db.get_all_cashbook_transactions(start_date=date_from, end_date=date_to, created_by=created_by)
-        expenses = [t for t in all_cashbook if t.get('linked_ledger_id') is None and t['transaction_type'] == 'Payment' and t['status'] != 'Declined']
+        transactions = db.get_office_transactions(start_date=date_from, end_date=date_to, created_by=created_by)
+        expenses = [t for t in transactions if t['transaction_type'] == 'Payment' and t.get('status') != 'Declined']
         total = db.get_office_expenses_total(date_from, date_to)
         buffer = _build_office_expenses_pdf(expenses, date_from, date_to, total)
         fn = f"office_expenses_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
@@ -2997,8 +2987,9 @@ def export_office_expenses_csv():
     """Export office expenses report as CSV."""
     date_from = request.args.get('date_from') or None
     date_to = request.args.get('date_to') or None
-    all_cashbook = db.get_all_cashbook_transactions(start_date=date_from, end_date=date_to)
-    expenses = [t for t in all_cashbook if t.get('linked_ledger_id') is None and t['transaction_type'] == 'Payment' and t['status'] != 'Declined']
+    created_by = request.args.get('created_by') or None
+    transactions = db.get_office_transactions(start_date=date_from, end_date=date_to, created_by=created_by)
+    expenses = [t for t in transactions if t['transaction_type'] == 'Payment' and t.get('status') != 'Declined']
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(['Date', 'Reference', 'Source', 'Description', 'Amount', 'Created By'])
@@ -3164,8 +3155,9 @@ def export_office_expenses_xlsx():
     try:
         date_from = request.args.get('date_from') or None
         date_to = request.args.get('date_to') or None
-        all_cashbook = db.get_all_cashbook_transactions(start_date=date_from, end_date=date_to)
-        expenses = [t for t in all_cashbook if t.get('linked_ledger_id') is None and t['transaction_type'] == 'Payment' and t['status'] != 'Declined']
+        created_by = request.args.get('created_by') or None
+        transactions = db.get_office_transactions(start_date=date_from, end_date=date_to, created_by=created_by)
+        expenses = [t for t in transactions if t['transaction_type'] == 'Payment' and t.get('status') != 'Declined']
         total = db.get_office_expenses_total(date_from, date_to)
         headers = ['Date', 'Reference', 'Source', 'Description', 'Amount', 'Created By']
         rows = []
@@ -3250,13 +3242,17 @@ def open_exports_folder():
 
 @app.route('/reports/export/open-file')
 def open_export_file():
-    """Open a specific exported file."""
+    """Open a specific exported file — only permits files inside the exports directory."""
     filepath = request.args.get('path', '')
-    if filepath and os.path.isfile(filepath):
-        try:
-            os.startfile(filepath)
-        except Exception:
-            pass
+    exports_dir = os.path.realpath(_get_exports_dir())
+    if filepath:
+        real = os.path.realpath(filepath)
+        if real.startswith(exports_dir + os.sep) or real == exports_dir:
+            if os.path.isfile(real):
+                try:
+                    os.startfile(real)
+                except Exception:
+                    pass
     return ('', 204)
 
 
@@ -3273,4 +3269,4 @@ if __name__ == '__main__':
     print(f"\nPress CTRL+C to stop the server\n")
     print("="*60 + "\n")
     
-    app.run(debug=True, host='127.0.0.1', port=5001)
+    app.run(debug=os.getenv('FLASK_DEBUG', '0') == '1', host='127.0.0.1', port=5001)

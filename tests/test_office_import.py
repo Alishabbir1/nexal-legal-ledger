@@ -28,6 +28,7 @@ def client(monkeypatch):
         session_security, 'validate_sso_session_binding', lambda *a, **kw: None
     )
     app.config['TESTING'] = True
+    app.config['WTF_CSRF_ENABLED'] = False
 
     # Clear statement history before each test to prevent cross-test pollution.
     # office_statement_history persists between pytest runs; stale entries would

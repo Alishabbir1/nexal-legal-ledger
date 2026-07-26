@@ -463,8 +463,6 @@ class Database:
         self._migrate_reconciliation_versioning(cursor)
         # Office Account bank statement import (Phase 1)
         self._ensure_column(cursor, 'office_cashbook', 'import_batch_id', "TEXT")
-        # Track which import staging rows are Balance Brought Forward entries
-        self._ensure_column(cursor, 'office_import_staging', 'is_balance_brought_forward', "INTEGER DEFAULT 0")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS office_import_staging (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -497,6 +495,8 @@ class Database:
         self._ensure_column(cursor, 'office_import_staging', 'ledger_balance_before', "TEXT")
         self._ensure_column(cursor, 'office_import_staging', 'balance_match', "TEXT")
         self._ensure_column(cursor, 'office_import_staging', 'closing_balance', "TEXT")
+        # Track which import staging rows are Balance Brought Forward entries
+        self._ensure_column(cursor, 'office_import_staging', 'is_balance_brought_forward', "INTEGER DEFAULT 0")
 
         # Permanent statement history — closing balances for continuity validation.
         # Each approved import batch records one row here.  These records are
@@ -518,6 +518,12 @@ class Database:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_osh_start "
             "ON office_statement_history(statement_start)"
+        )
+        # UNIQUE index on batch_id prevents duplicate statement history rows.
+        # Using CREATE UNIQUE INDEX so it can be added idempotently to existing DBs.
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_osh_batch "
+            "ON office_statement_history(batch_id)"
         )
         conn.commit()
         if not self.skip_user_seed:
@@ -751,6 +757,8 @@ class Database:
         data_tables = [
             'cheque_status_log',
             'office_fee_transfers',
+            'office_statement_history',
+            'office_import_staging',
             'reconciliation_bank_session',
             'reconciliations',
             'month_locks',
@@ -833,6 +841,8 @@ class Database:
                 tables_order = [
                     'cheque_status_log',
                     'office_fee_transfers',
+                    'office_statement_history',
+                    'office_import_staging',
                     'reconciliation_bank_session',
                     'reconciliations',
                     'month_locks',
@@ -1640,7 +1650,7 @@ class Database:
         raise ValueError(f"Database busy after {DB_WRITE_RETRIES} retries: {last_err}")
 
     def unlock_reconciliation_month(self, month: int, year: int, unlocked_by: str) -> Dict:
-        """Unlock month for corrections; current version returns to live calculation mode."""
+        """Unlock month for corrections; returns to live calculation mode."""
         if not self.is_month_locked(month, year):
             raise ValueError(f'{year}-{month:02d} is not locked.')
 
@@ -1648,17 +1658,37 @@ class Database:
         if not current:
             raise ValueError('No current reconciliation record exists for this month.')
 
-        self.unlock_month(month, year, unlocked_by)
-
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE reconciliations SET locked = 0 WHERE id = ?
-            """, (current['id'],))
-            conn.commit()
-        finally:
-            conn.close()
+        # Merge both UPDATEs (month_locks + reconciliations) into a single
+        # atomic commit so a crash cannot leave them in inconsistent states.
+        last_err = None
+        for attempt in range(DB_WRITE_RETRIES):
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE month_locks
+                    SET locked = 0,
+                        unlocked_by = ?,
+                        unlocked_at = CURRENT_TIMESTAMP
+                    WHERE lock_month = ? AND lock_year = ?
+                """, (unlocked_by, month, year))
+                cursor.execute("""
+                    UPDATE reconciliations SET locked = 0 WHERE id = ?
+                """, (current['id'],))
+                conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                last_err = e
+                if 'locked' in str(e).lower() or 'busy' in str(e).lower():
+                    _log_db_retry('unlock_reconciliation_month', attempt + 1, e)
+                    time.sleep(DB_WRITE_RETRY_DELAY)
+                else:
+                    raise ValueError(f"Database error: {e}")
+            finally:
+                conn.close()
+        else:
+            raise ValueError(f"Database busy after {DB_WRITE_RETRIES} retries: {last_err}")
 
         return {
             'id': current['id'],
@@ -1947,20 +1977,9 @@ class Database:
             conn = self.get_connection()
             try:
                 cursor = conn.cursor()
-                year = datetime.now().year
-                cursor.execute("SELECT value FROM system_config WHERE key = 'txn_id_year'")
-                row = cursor.fetchone()
-                last_year = int(row['value']) if row else 0
-                cursor.execute("SELECT value FROM system_config WHERE key = 'txn_id_seq'")
-                row = cursor.fetchone()
-                seq = int(row['value']) if row else 0
-                if year != last_year:
-                    seq = 0
-                seq += 1
-                cursor.execute("UPDATE system_config SET value = ?, updated_date = CURRENT_TIMESTAMP WHERE key = 'txn_id_year'", (str(year),))
-                cursor.execute("UPDATE system_config SET value = ?, updated_date = CURRENT_TIMESTAMP WHERE key = 'txn_id_seq'", (str(seq),))
+                txn_id = self._reserve_next_txn_id_cursor(cursor)
                 conn.commit()
-                return f"TXN-{year}-{seq:06d}"
+                return txn_id
             except sqlite3.OperationalError as e:
                 conn.rollback()
                 last_err = e
@@ -1972,6 +1991,30 @@ class Database:
             finally:
                 conn.close()
         raise ValueError(f"Database busy after {DB_WRITE_RETRIES} retries: {last_err}")
+
+    def _reserve_next_txn_id_cursor(self, cursor) -> str:
+        """Reserve the next TXN-YYYY-NNNNNN using an already-open cursor.
+        Called from within BEGIN IMMEDIATE blocks to avoid opening a second connection.
+        """
+        year = datetime.now().year
+        cursor.execute("SELECT value FROM system_config WHERE key = 'txn_id_year'")
+        row = cursor.fetchone()
+        last_year = int(row['value']) if row else 0
+        cursor.execute("SELECT value FROM system_config WHERE key = 'txn_id_seq'")
+        row = cursor.fetchone()
+        seq = int(row['value']) if row else 0
+        if year != last_year:
+            seq = 0
+        seq += 1
+        cursor.execute(
+            "UPDATE system_config SET value = ?, updated_date = CURRENT_TIMESTAMP WHERE key = 'txn_id_year'",
+            (str(year),),
+        )
+        cursor.execute(
+            "UPDATE system_config SET value = ?, updated_date = CURRENT_TIMESTAMP WHERE key = 'txn_id_seq'",
+            (str(seq),),
+        )
+        return f"TXN-{year}-{seq:06d}"
 
     def _migrate_transaction_ids(self, cursor):
         """Populate transaction_id for existing records. Run once."""
@@ -2543,16 +2586,6 @@ class Database:
         Returns (ledger_id, cashbook_id). Rolls back both if either fails.
         """
         self._ensure_matter_open(client_id)
-        if transaction_type in ('Payment', 'Transfer'):
-            if allow_override:
-                total_cashbook = self.get_total_cashbook_net_balance()
-                if (total_cashbook - amount) < Decimal('0'):
-                    raise ValueError(
-                        f"Override blocked: transaction would reduce total client cashbook below £0. "
-                        f"Total cashbook: £{total_cashbook:,.2f} | Transaction: £{amount:,.2f}")
-            else:
-                if self.check_deficit(client_id, amount, transaction_type, transaction_date):
-                    raise ValueError("Payment exceeds cleared client funds.")
         if not reference or not reference.strip():
             raise ValueError("Reference is mandatory")
         if not source:
@@ -2567,8 +2600,27 @@ class Database:
             conn = self.get_connection()
             try:
                 cursor = conn.cursor()
-                txn_ledger = self.reserve_next_transaction_id()
-                txn_cashbook = self.reserve_next_transaction_id()
+                # BEGIN IMMEDIATE serialises the balance-check + INSERT so that
+                # concurrent requests cannot both pass the deficit check.
+                cursor.execute("BEGIN IMMEDIATE")
+                if transaction_type in ('Payment', 'Transfer'):
+                    if allow_override:
+                        total_cashbook = self._cursor_sum_all_client_cashbook(cursor)
+                        if (total_cashbook - amount) < Decimal('0'):
+                            conn.rollback()
+                            raise ValueError(
+                                f"Override blocked: transaction would reduce total client cashbook below £0. "
+                                f"Total cashbook: £{total_cashbook:,.2f} | Transaction: £{amount:,.2f}")
+                    else:
+                        balance = self._cursor_sum_ledger_client(cursor, client_id, transaction_date)
+                        if transaction_type == 'Payment' and (balance - amount) < Decimal('0'):
+                            conn.rollback()
+                            raise ValueError("Payment exceeds cleared client funds.")
+                        elif transaction_type == 'Transfer' and balance < amount:
+                            conn.rollback()
+                            raise ValueError("Payment exceeds cleared client funds.")
+                txn_ledger = self._reserve_next_txn_id_cursor(cursor)
+                txn_cashbook = self._reserve_next_txn_id_cursor(cursor)
                 cursor.execute("""
                     INSERT INTO ledger_transactions
                     (transaction_id, client_id, transaction_date, amount, transaction_type, reference,
@@ -2761,10 +2813,6 @@ class Database:
         """
         if not reference or not reference.strip():
             raise ValueError("Reference is mandatory")
-        if transaction_type == 'Payment' and not skip_balance_check:
-            office_balance = self.get_office_balance(as_of_date=transaction_date)
-            if office_balance - amount < Decimal('0'):
-                raise ValueError("Office account balance cannot go below £0.")
         self._ensure_month_unlocked(transaction_date)
 
         # Determine effective status.  Cheques default to Pending; everything else
@@ -2779,7 +2827,29 @@ class Database:
             conn = self.get_connection()
             try:
                 cursor = conn.cursor()
-                txn_id = self.reserve_next_transaction_id()
+                # BEGIN IMMEDIATE prevents a TOCTOU race between the balance check
+                # and the INSERT (no concurrent writer can sneak in between them).
+                cursor.execute("BEGIN IMMEDIATE")
+                if transaction_type == 'Payment' and not skip_balance_check:
+                    cursor.execute(
+                        """
+                        SELECT COALESCE(SUM(
+                            CASE WHEN transaction_type = 'Receipt' THEN amount
+                                 WHEN transaction_type = 'Payment' THEN -amount
+                                 ELSE 0 END
+                        ), 0)
+                        FROM office_cashbook
+                        WHERE status = 'Cleared'
+                          AND COALESCE(is_deleted, 0) = 0
+                          AND transaction_date <= ?
+                        """,
+                        (transaction_date,),
+                    )
+                    balance = Decimal(str(cursor.fetchone()[0] or 0))
+                    if balance - amount < Decimal('0'):
+                        conn.rollback()
+                        raise ValueError("Office account balance cannot go below £0.")
+                txn_id = self._reserve_next_txn_id_cursor(cursor)
                 cursor.execute("""
                     INSERT INTO office_cashbook
                     (transaction_id, transaction_date, amount, transaction_type, reference, source,
@@ -3106,6 +3176,123 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+
+    def approve_office_import_batch(
+        self,
+        kept: list,
+        batch_id: str,
+        batch_meta: dict,
+        approved_by: str,
+    ) -> int:
+        """
+        Atomically write all approved import transactions plus statement history.
+
+        Everything is committed in a single BEGIN IMMEDIATE transaction so that a
+        crash or error after partial inserts can never leave the database in an
+        inconsistent state. Staging rows are deleted only after the commit succeeds.
+
+        Returns the number of transactions successfully inserted.
+        """
+        last_err = None
+        for attempt in range(DB_WRITE_RETRIES):
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("BEGIN IMMEDIATE")
+
+                inserted_ids = []
+                for row in kept:
+                    source = row['source']
+                    status = row.get('status') or ('Pending' if source == 'Cheque' else 'Cleared')
+                    if status not in ('Pending', 'Cleared'):
+                        status = 'Cleared'
+                    txn_id = self._reserve_next_txn_id_cursor(cursor)
+                    cursor.execute(
+                        """
+                        INSERT INTO office_cashbook
+                        (transaction_id, transaction_date, amount, transaction_type,
+                         reference, source, description, status, created_by, import_batch_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (txn_id, row['transaction_date'], str(row['amount']),
+                         row['transaction_type'], row['reference'], source,
+                         row.get('description'), status, approved_by, batch_id),
+                    )
+                    row_id = cursor.lastrowid
+                    if source == 'Cheque' and status == 'Pending':
+                        clearance_days = int(self.get_config('cheque_clearance_days', '5'))
+                        cleared_date = (
+                            datetime.strptime(row['transaction_date'], '%Y-%m-%d') +
+                            timedelta(days=clearance_days)
+                        ).strftime('%Y-%m-%d')
+                        cursor.execute(
+                            "UPDATE office_cashbook SET cleared_date = ? WHERE id = ?",
+                            (cleared_date, row_id),
+                        )
+                    inserted_ids.append((row_id, txn_id, row))
+
+                # Record statement history inside the same transaction
+                if batch_meta and batch_meta.get('opening_balance') is not None:
+                    opening = Decimal(str(batch_meta['opening_balance']))
+                    stmt_receipts = sum(
+                        k['amount'] for k in kept
+                        if k['transaction_type'] == 'Receipt'
+                        and not k.get('is_balance_brought_forward')
+                    )
+                    stmt_payments = sum(
+                        k['amount'] for k in kept
+                        if k['transaction_type'] == 'Payment'
+                    )
+                    cb = str(opening + stmt_receipts - stmt_payments)
+                    ob_str = str(batch_meta['opening_balance'])
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO office_statement_history
+                        (batch_id, filename, statement_start, statement_end,
+                         opening_balance, closing_balance, approved_by)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (batch_id, batch_meta.get('filename', ''),
+                         batch_meta.get('statement_start', ''),
+                         batch_meta.get('statement_end', ''),
+                         ob_str, cb, approved_by),
+                    )
+
+                conn.commit()
+
+                # Audit trail entries written outside the transaction (best-effort)
+                for row_id, txn_id, row in inserted_ids:
+                    try:
+                        self._log_audit(
+                            'office_cashbook', row_id, 'INSERT', None,
+                            {'transaction_id': txn_id,
+                             'amount': str(row['amount']),
+                             'transaction_type': row['transaction_type'],
+                             'reference': row['reference'],
+                             'status': row.get('status', 'Cleared')},
+                        )
+                    except sqlite3.OperationalError:
+                        pass
+
+                # Remove staging only after everything committed successfully
+                cursor2 = conn.cursor()
+                cursor2.execute(
+                    "DELETE FROM office_import_staging WHERE batch_id = ?", (batch_id,)
+                )
+                conn.commit()
+                return len(inserted_ids)
+
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                last_err = e
+                if 'locked' in str(e).lower() or 'busy' in str(e).lower():
+                    _log_db_retry('approve_office_import_batch', attempt + 1, e)
+                    time.sleep(DB_WRITE_RETRY_DELAY)
+                else:
+                    raise ValueError(f"Database error during import approval: {e}")
+            finally:
+                conn.close()
+        raise ValueError(f"Database busy after {DB_WRITE_RETRIES} retries: {last_err}")
 
     def office_cashbook_duplicate_exists(
         self, transaction_date: str, amount: str, transaction_type: str

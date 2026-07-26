@@ -15,6 +15,7 @@ def client(monkeypatch):
 
     monkeypatch.setattr(session_security, 'validate_sso_session_binding', lambda *args, **kwargs: None)
     app.config['TESTING'] = True
+    app.config['WTF_CSRF_ENABLED'] = False
     admin = app_module.db.get_user_by_username('admin')
     with app.test_client() as test_client:
         with test_client.session_transaction() as sess:

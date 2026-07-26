@@ -734,8 +734,12 @@ function openReconModal(row) {
     document.getElementById('rm-version').textContent = 'v' + version;
     const lockEl = document.getElementById('rm-lock-status');
     const statusClass = isCurrent ? (locked ? 'status-cleared' : 'status-open') : 'status-pending';
-    lockEl.innerHTML = '<span class="status-badge ' + statusClass + '" style="font-size:11px;">' + statusLabel +
-        (locked && lockedBy ? ' — ' + lockedBy : '') + '</span>';
+    var lockSpan = document.createElement('span');
+    lockSpan.className = 'status-badge ' + statusClass;
+    lockSpan.style.fontSize = '11px';
+    lockSpan.textContent = statusLabel + (locked && lockedBy ? ' \u2014 ' + lockedBy : '');
+    lockEl.textContent = '';
+    lockEl.appendChild(lockSpan);
     const notesWrap = document.getElementById('rm-notes-wrap');
     if (notes) {
         document.getElementById('rm-notes').textContent = notes;

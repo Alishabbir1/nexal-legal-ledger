@@ -368,8 +368,10 @@ def establish_sso_session(flask_session, jwt_payload: Dict[str, Any]) -> Dict[st
         ledger_role=ledger_user["role"],
     )
     portal_password_hash = jwt_payload.get("password_hash")
-    if portal_password_hash:
-        session_data["portal_password_hash"] = portal_password_hash
+    # Sync the Portal password hash into the tenant DB immediately so that
+    # password-gated security prompts can verify against Portal credentials.
+    # Do NOT persist the hash in the Flask session cookie — it is sensitive
+    # and is no longer needed there once it has been written to the DB.
     for key, value in session_data.items():
         flask_session[key] = value
     flask_session["sso_established_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
