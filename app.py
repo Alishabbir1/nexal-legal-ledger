@@ -1512,15 +1512,14 @@ def office_import_approve():
             transaction_date = staged_date
 
         # ── Cleared checkbox ────────────────────────────────────────────
-        # Cheques are always Pending (existing behaviour).
-        # For all other sources, the review form emits a hidden sentinel
-        # `cleared_present_{id}=1` for every non-BF row.  When the sentinel
-        # is present we can trust the checkbox value; when it is absent the
-        # POST came from old test code or a programmatic call that doesn't
-        # know about the Cleared column — default to Cleared.
-        if source == 'Cheque':
-            row_status = 'Pending'
-        elif request.form.get(f'cleared_present_{row_id}') == '1':
+        # Source and clearance status are independent.  All imported
+        # transactions default to Cleared; the user can uncheck any row on
+        # the review page before approving.
+        # The template emits a hidden sentinel `cleared_present_{id}=1` for
+        # every non-BF row.  When the sentinel is present we trust the
+        # checkbox value; when it is absent (old test code or programmatic
+        # call) we default to Cleared.
+        if request.form.get(f'cleared_present_{row_id}') == '1':
             row_status = 'Cleared' if request.form.get(f'cleared_{row_id}') == 'on' else 'Pending'
         else:
             row_status = 'Cleared'
@@ -1537,7 +1536,7 @@ def office_import_approve():
             diffs.append(f"Description edited")
         if reference != staged_ref and reference != 'Bank Import':
             diffs.append(f"Reference edited")
-        if row_status == 'Pending' and source != 'Cheque':
+        if row_status == 'Pending':
             diffs.append("Imported as Uncleared")
         if diffs:
             label = description or row.get('description') or reference

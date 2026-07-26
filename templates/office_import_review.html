@@ -512,29 +512,10 @@
 
     /* ── Source change: Cheque disables Cleared checkbox ──────────── */
     function onSourceChange(sel) {
-        var rowId  = sel.getAttribute('data-row');
-        var isCheque = (sel.value === 'Cheque');
-        var clearedCb = document.querySelector('[name="cleared_' + rowId + '"]');
-        var clearedLabel = clearedCb ? clearedCb.closest('label').querySelector('.cleared-label') : null;
-        if (clearedCb) {
-            if (isCheque) {
-                // Cheques are always Pending — visually indicate this
-                clearedCb.checked = false;
-                clearedCb.disabled = true;
-                if (clearedLabel) {
-                    clearedLabel.textContent = 'Pending';
-                    clearedLabel.style.color = '#e67e22';
-                }
-                if (rowData[rowId]) rowData[rowId].cleared = false;
-            } else {
-                clearedCb.disabled = false;
-                clearedCb.checked = rowData[rowId] ? rowData[rowId].cleared : true;
-                if (clearedLabel) {
-                    clearedLabel.textContent = clearedCb.checked ? 'Cleared' : 'Uncleared';
-                    clearedLabel.style.color = clearedCb.checked ? '#059669' : '#e67e22';
-                }
-            }
-        }
+        // Source and clearance status are independent concepts.
+        // Changing the source never alters the Cleared checkbox — the user
+        // controls that separately.  We still call recalculate() so that any
+        // live-total listeners can react if they ever need to.
         recalculate();
     }
 
