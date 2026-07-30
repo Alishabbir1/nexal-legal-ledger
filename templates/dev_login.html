@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<html lang="en" style="background-color:#070a14;color-scheme:dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dev Login — Nexal Legal Ledger</title>
+  <script>(function(){var t=localStorage.getItem('ss-theme');if(t==='light')document.documentElement.setAttribute('data-theme','light');})();</script>
   <style>
     :root {
       --bg-base: #070a14;
@@ -16,6 +17,15 @@
       --text-secondary: #6b7c99;
       --danger: #ef4444;
       --warning: #f59e0b;
+    }
+    html[data-theme="light"] {
+      --bg-base: #eef1f7;
+      --bg-surface: #ffffff;
+      --bg-card: #ffffff;
+      --border: rgba(15, 23, 42, 0.17);
+      --text-primary: #0f172a;
+      --text-secondary: #334155;
+      color-scheme: light;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { font-size: 14px; background: var(--bg-base); color: var(--text-primary); }
