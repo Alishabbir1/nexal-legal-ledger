@@ -46,6 +46,7 @@ find_git_repo() {
     "${NEXAL_LEDGER_REPO:-}" \
     "/opt/nexal-ledger" \
     "/opt/nexal-legal-ledger" \
+    "/opt/nexal-legal" \
     "/root/nexal-legal-ledger"; do
     [[ -n "${candidate}" ]] || continue
     [[ -d "${candidate}/.git" ]] || continue

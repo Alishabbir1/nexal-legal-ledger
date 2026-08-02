@@ -4,18 +4,37 @@ Production Ledger at `https://ledger.nexallegal.co.uk`.
 
 ## Common failure: wrong deploy directory
 
-The VPS may have **two** ledger clones:
+The VPS may have **two** ledger clones, or a **missing** WorkingDirectory:
 
 | Path | Notes |
 |------|--------|
-| `/root/nexal-legal-ledger` | Often used for manual `git pull` |
-| `/opt/nexal-ledger` | Often the **systemd WorkingDirectory** gunicorn actually runs |
+| `/root/nexal-legal-ledger` | Git clone — **use this as WorkingDirectory** |
+| `/opt/nexal-ledger` | Sometimes configured in older systemd units |
+| `/opt/nexal-legal` | **Broken** — path often does not exist; service fails silently or serves stale code |
 
-If you `git pull` in `/root/nexal-legal-ledger` but `nexal-ledger.service` uses
-`WorkingDirectory=/opt/nexal-ledger`, **live will keep serving old code** (no VAT column,
-no setup page, no summary panel).
+If `WorkingDirectory` points at a path that does not exist or is not updated, live will not
+show VAT (no column, no setup page, no summary panel) even after `git pull` elsewhere.
 
-## One-command fix (IONOS console or SSH)
+## Fix WorkingDirectory (confirmed production issue)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Alishabbir1/nexal-legal-ledger/main/scripts/fix_ledger_working_directory.sh | bash
+```
+
+Manual equivalent:
+
+```bash
+sudo mkdir -p /etc/systemd/system/nexal-ledger.service.d
+sudo tee /etc/systemd/system/nexal-ledger.service.d/working-directory.conf <<'EOF'
+[Service]
+WorkingDirectory=/root/nexal-legal-ledger
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart nexal-ledger
+sudo systemctl status nexal-ledger --no-pager
+```
+
+## One-command deploy (after WorkingDirectory is fixed)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Alishabbir1/nexal-legal-ledger/main/scripts/bootstrap_deploy_vat.sh | bash
