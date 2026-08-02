@@ -1200,11 +1200,15 @@ def office_account():
     vat_quarter = None
     vat_summary = None
     vat_banner = None
+    vat_quarter_reminders = []
     if vat_active:
         cycle = vat_settings['quarter_cycle']
-        open_key = _open_vat_quarter_key(cycle)
+        active_key = _resolve_vat_active_quarter(cycle)['quarter_key']
         vat_quarter, vat_boxes, vat_summary, vat_return, _ = _vat_quarter_context(
-            cycle, open_key, vat_settings=vat_settings
+            cycle, active_key, vat_settings=vat_settings
+        )
+        vat_quarter_reminders = _vat_unsubmitted_quarter_reminders(
+            cycle, active_key, vat_settings
         )
         vat_banner = _vat_quarter_end_banner(cycle, vat_settings)
     else:
@@ -1226,7 +1230,8 @@ def office_account():
                          vat_settings=vat_settings,
                          vat_summary=vat_summary,
                          vat_quarter=vat_quarter,
-                         vat_banner=vat_banner)
+                         vat_banner=vat_banner,
+                         vat_quarter_reminders=vat_quarter_reminders)
 
 
 @app.route('/office-account/add-income', methods=['GET', 'POST'])
@@ -1418,33 +1423,102 @@ def _parse_vat_period_start_form(raw: Optional[str]) -> Optional[str]:
         return None
 
 
+def _filter_txns_for_vat_quarter(txns: list, quarter: dict) -> list:
+    """Keep rows assigned to this quarter (by vat_quarter_key or transaction date)."""
+    key = quarter['quarter_key']
+    start = quarter['quarter_start']
+    end = quarter['quarter_end']
+    matched = []
+    for txn in txns:
+        txn_key = txn.get('vat_quarter_key')
+        if txn_key:
+            if txn_key == key:
+                matched.append(txn)
+        else:
+            d = txn.get('transaction_date') or ''
+            if start <= d <= end:
+                matched.append(txn)
+    return matched
+
+
+def _collect_unsubmitted_vat_quarters(cycle_key: str, period_start=None) -> list:
+    """Open quarters with VAT activity, ordered by quarter end (oldest first)."""
+    from lib.vat import quarter_for_date, parse_date, quarter_period_label
+
+    if period_start is None:
+        period_start = _vat_period_start()
+
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT transaction_date, vat_quarter_key
+            FROM office_cashbook
+            WHERE COALESCE(is_deleted, 0) = 0
+              AND COALESCE(is_vat_excluded, 0) = 0
+              AND vat_applicable = 1
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    quarter_keys = set()
+    for row in rows:
+        key = row['vat_quarter_key']
+        if not key:
+            d = parse_date(row['transaction_date'])
+            if d:
+                key = quarter_for_date(
+                    d, cycle_key, period_start_override=period_start
+                )['quarter_key']
+        if key:
+            quarter_keys.add(key)
+
+    open_quarters = []
+    for key in sorted(quarter_keys):
+        rec = db.get_vat_return(key)
+        if rec and rec.get('is_locked'):
+            continue
+        q_end = parse_date(key)
+        if not q_end:
+            continue
+        quarter = quarter_for_date(q_end, cycle_key, period_start_override=period_start)
+        txns = _filter_vat_scope_txns(
+            _filter_txns_for_vat_quarter(
+                db.get_office_cashbook_for_vat_quarter(
+                    quarter['quarter_start'], quarter['quarter_end']
+                ),
+                quarter,
+            ),
+            period_start,
+        )
+        if not any(
+            t.get('vat_applicable')
+            and not t.get('is_vat_excluded')
+            and not t.get('is_deleted')
+            for t in txns
+        ):
+            continue
+        open_quarters.append({
+            'quarter': quarter,
+            'quarter_key': key,
+            'period': quarter_period_label(quarter),
+        })
+    return open_quarters
+
+
 def _resolve_vat_display_quarter(cycle_key: str, period_start=None) -> dict:
     """
-    Quarter shown on Office Account VAT summary and default VAT return.
+    Quarter containing the most recent VAT-tagged approved transaction.
 
-    Uses the calendar-current quarter when it contains VAT transactions;
-    otherwise the quarter of the most recent VAT-tagged approved transaction
-    (so a newly imported statement in another quarter still appears in summaries).
+    Uses transaction dates, not today's calendar date, so future-dated
+    statement imports (e.g. Nov/Dec 2026 uploaded in Aug 2026) resolve correctly.
+    Falls back to the calendar-current quarter when no VAT transactions exist.
     """
     from lib.vat import current_quarter, quarter_for_date, parse_date
 
     if period_start is None:
         period_start = _vat_period_start()
-
-    current = current_quarter(cycle_key, period_start_override=period_start)
-    txns = _filter_vat_scope_txns(
-        db.get_office_cashbook_for_vat_quarter(
-            current['quarter_start'], current['quarter_end']
-        ),
-        period_start,
-    )
-    if any(
-        t.get('vat_applicable')
-        and not t.get('is_vat_excluded')
-        and not t.get('is_deleted')
-        for t in txns
-    ):
-        return current
 
     conn = db.get_connection()
     try:
@@ -1454,7 +1528,7 @@ def _resolve_vat_display_quarter(cycle_key: str, period_start=None) -> dict:
             WHERE COALESCE(is_deleted, 0) = 0
               AND COALESCE(is_vat_excluded, 0) = 0
               AND vat_applicable = 1
-            ORDER BY transaction_date DESC
+            ORDER BY transaction_date DESC, id DESC
             LIMIT 1
             """
         ).fetchone()
@@ -1465,7 +1539,68 @@ def _resolve_vat_display_quarter(cycle_key: str, period_start=None) -> dict:
         d = parse_date(row['transaction_date'])
         if d:
             return quarter_for_date(d, cycle_key, period_start_override=period_start)
-    return current
+    return current_quarter(cycle_key, period_start_override=period_start)
+
+
+def _resolve_vat_active_quarter(cycle_key: str, period_start=None) -> dict:
+    """
+    Quarter for Office Account VAT summary and default VAT return view.
+
+    Uses the quarter of the latest VAT-tagged transaction. When that quarter
+    is already submitted and locked, rolls forward to the next calendar quarter
+    (clean £0 start after submit).
+    """
+    from datetime import timedelta
+    from lib.vat import current_quarter, quarter_for_date, parse_date
+
+    if period_start is None:
+        period_start = _vat_period_start()
+
+    open_quarters = _collect_unsubmitted_vat_quarters(cycle_key, period_start)
+    if open_quarters:
+        return open_quarters[-1]['quarter']
+
+    display = _resolve_vat_display_quarter(cycle_key, period_start)
+    vat_return = db.get_vat_return(display['quarter_key'])
+    if vat_return and vat_return.get('is_locked'):
+        q_end = parse_date(display['quarter_end'])
+        if q_end:
+            return quarter_for_date(
+                q_end + timedelta(days=1),
+                cycle_key,
+                period_start_override=period_start,
+            )
+        return current_quarter(cycle_key, period_start_override=period_start)
+    return display
+
+
+def _vat_unsubmitted_quarter_reminders(
+    cycle_key: str,
+    active_quarter_key: str,
+    settings: Optional[Dict] = None,
+) -> list:
+    """
+    Older open VAT quarters with activity (excluding the active display quarter).
+
+    Shown as non-blocking reminders when a firm uploads a new quarter without
+    submitting the previous one.
+    """
+    period_start = _vat_period_start(settings)
+    open_quarters = _collect_unsubmitted_vat_quarters(cycle_key, period_start)
+    reminders = []
+    for item in open_quarters:
+        if item['quarter_key'] == active_quarter_key:
+            continue
+        reminders.append({
+            'quarter_key': item['quarter_key'],
+            'period': item['period'],
+            'message': (
+                f'You have an unsubmitted VAT quarter ({item["period"]}) with '
+                'transactions. Please review and submit it before continuing '
+                'with the new quarter.'
+            ),
+        })
+    return reminders
 
 
 def _vat_quarter_context(cycle_key: str, quarter_key: str = None, vat_settings: dict = None):
@@ -1480,13 +1615,16 @@ def _vat_quarter_context(cycle_key: str, quarter_key: str = None, vat_settings: 
         if q_end:
             quarter = quarter_for_date(q_end, cycle_key, period_start_override=period_start)
         else:
-            quarter = _resolve_vat_display_quarter(cycle_key, period_start)
+            quarter = _resolve_vat_active_quarter(cycle_key, period_start)
     else:
-        quarter = _resolve_vat_display_quarter(cycle_key, period_start)
+        quarter = _resolve_vat_active_quarter(cycle_key, period_start)
 
     txns = _filter_vat_scope_txns(
-        db.get_office_cashbook_for_vat_quarter(
-            quarter['quarter_start'], quarter['quarter_end']
+        _filter_txns_for_vat_quarter(
+            db.get_office_cashbook_for_vat_quarter(
+                quarter['quarter_start'], quarter['quarter_end']
+            ),
+            quarter,
         ),
         period_start,
     )
@@ -1553,35 +1691,37 @@ def _open_vat_quarter_key(cycle_key: str, requested_key: str = None) -> str:
 
 
 def _vat_quarter_end_banner(cycle_key: str, settings: Optional[Dict] = None) -> Optional[Dict]:
-    """Banner payload when an ended quarter's VAT return is still unsubmitted."""
-    from datetime import date
+    """Banner when an ended quarter's VAT return is still unsubmitted."""
     from lib.vat import is_quarter_ended, parse_date
 
     settings = settings or db.get_vat_settings()
-    open_key = _open_vat_quarter_key(cycle_key)
-    quarter, _, _, vat_return, _ = _vat_quarter_context(
-        cycle_key, open_key, vat_settings=settings
-    )
-    if vat_return and vat_return.get('is_locked'):
-        return None
-    if not is_quarter_ended(quarter):
-        return None
+    period_start = _vat_period_start(settings)
+    open_quarters = _collect_unsubmitted_vat_quarters(cycle_key, period_start)
 
-    q_end = parse_date(quarter['quarter_end'])
-    deadline = parse_date(quarter['submission_deadline'])
-    q_end_display = q_end.strftime('%d %b %Y') if q_end else quarter['quarter_end']
-    deadline_display = (
-        deadline.strftime('%d %b %Y') if deadline else quarter['submission_deadline']
-    )
-    return {
-        'message': (
-            f'Your VAT quarter ended {q_end_display}. '
-            f'Please review and submit your VAT return before {deadline_display}.'
-        ),
-        'quarter_key': open_key,
-        'quarter_end': quarter['quarter_end'],
-        'submission_deadline': quarter['submission_deadline'],
-    }
+    for item in open_quarters:
+        quarter = item['quarter']
+        vat_return = db.get_vat_return(item['quarter_key'])
+        if vat_return and vat_return.get('is_locked'):
+            continue
+        if not is_quarter_ended(quarter):
+            continue
+
+        q_end = parse_date(quarter['quarter_end'])
+        deadline = parse_date(quarter['submission_deadline'])
+        q_end_display = q_end.strftime('%d %b %Y') if q_end else quarter['quarter_end']
+        deadline_display = (
+            deadline.strftime('%d %b %Y') if deadline else quarter['submission_deadline']
+        )
+        return {
+            'message': (
+                f'Your VAT quarter ended {q_end_display}. '
+                f'Please review and submit your VAT return before {deadline_display}.'
+            ),
+            'quarter_key': item['quarter_key'],
+            'quarter_end': quarter['quarter_end'],
+            'submission_deadline': quarter['submission_deadline'],
+        }
+    return None
 
 
 def _vat_user_figures(vat_return: Optional[Dict], calculated: Dict) -> Dict:
@@ -1955,10 +2095,11 @@ def office_import_approve():
                     description, vat_applicable, current_username()
                 )
             txn_d = parse_date(transaction_date)
-            if txn_d and vat_cycle:
+            cycle_for_key = vat_cycle or vat_settings.get('quarter_cycle')
+            if txn_d and cycle_for_key and vat_applicable:
                 period_start = _vat_period_start(vat_settings)
                 vat_quarter_key = quarter_for_date(
-                    txn_d, vat_cycle, period_start_override=period_start
+                    txn_d, cycle_for_key, period_start_override=period_start
                 )['quarter_key']
             if vat_applicable:
                 diffs.append(
@@ -2177,7 +2318,11 @@ def vat_return():
         return bad
 
     expand_key = (request.args.get('expand') or '').strip() or None
-    open_key = _open_vat_quarter_key(cycle, request.args.get('quarter') or None)
+    requested = (request.args.get('quarter') or '').strip() or None
+    if requested:
+        open_key = requested
+    else:
+        open_key = _resolve_vat_active_quarter(cycle)['quarter_key']
 
     quarter, calculated, summary, vat_return, _ = _vat_quarter_context(
         cycle, open_key, vat_settings=settings

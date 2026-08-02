@@ -463,7 +463,7 @@ def test_clean_quarter_start_after_submit(client, monkeypatch):
     assert b"0.00" in resp.data
 
     cycle = db.get_vat_settings()["quarter_cycle"]
-    open_key = app_module._open_vat_quarter_key(cycle)
+    open_key = app_module._resolve_vat_active_quarter(cycle)["quarter_key"]
     _, boxes, summary, _, txns = app_module._vat_quarter_context(
         cycle, open_key, vat_settings=db.get_vat_settings()
     )
@@ -493,3 +493,166 @@ def test_vat_history_shows_submitted_boxes(client):
     assert b"Submitted figure" in resp.data
     assert b"150.00" in resp.data
     assert b"Submitted" in resp.data
+
+
+def test_resolve_vat_display_quarter_uses_latest_transaction_date(monkeypatch):
+    """Display quarter follows latest VAT txn date, not today's calendar quarter."""
+    from datetime import date
+    import lib.vat as vat_module
+    from lib.vat import quarter_for_date, quarter_period_label
+
+    class FakeDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 8, 15)
+
+    monkeypatch.setattr(vat_module, "date", FakeDate)
+
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-11-15")
+
+    quarter = app_module._resolve_vat_display_quarter("mar_jun_sep_dec")
+    expected = quarter_for_date(date(2026, 11, 15), "mar_jun_sep_dec")
+    assert quarter["quarter_key"] == expected["quarter_key"]
+    assert "2026" in quarter_period_label(quarter)
+
+
+def test_vat_summary_shows_figures_for_future_quarter(client, monkeypatch):
+    """Office Account VAT summary includes future-dated approved VAT transactions."""
+    from datetime import date
+    import lib.vat as vat_module
+
+    class FakeDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 8, 15)
+
+    monkeypatch.setattr(vat_module, "date", FakeDate)
+
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-11-15")
+
+    resp = client.get("/office-account")
+    assert resp.status_code == 200
+    assert b"2026" in resp.data
+    assert b"200.00" in resp.data
+
+
+def test_vat_quarter_key_saved_on_import_approve(client):
+    """Approve saves vat_quarter_key matching the transaction date quarter."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    from lib.vat import quarter_for_date
+    from datetime import date
+
+    batch_id = str(uuid4())
+    rows = [{
+        "date": "2026-11-20",
+        "description": "VAT receipt",
+        "reference": "REF-VAT",
+        "amount": Decimal("1200.00"),
+        "transaction_type": "Receipt",
+        "source": "Bank Transfer",
+        "row_number": 1,
+        "vat_applicable": True,
+        "vat_auto_tagged": False,
+        "is_desc_amount_duplicate": False,
+    }]
+    db.create_office_import_batch(
+        batch_id, "test.csv", "2026-11-01", "2026-11-30", rows, "admin",
+        opening_balance=Decimal("0"),
+        closing_balance=Decimal("1200"),
+        balance_match="first_import",
+    )
+    staged, _ = db.get_office_import_staging(batch_id)
+    row_id = staged[0]["id"]
+    expected_key = quarter_for_date(
+        date(2026, 11, 20), "mar_jun_sep_dec"
+    )["quarter_key"]
+
+    client.post(
+        "/office-account/import-approve",
+        data={
+            "batch_id": batch_id,
+            f"keep_{row_id}": "on",
+            f"ref_{row_id}": "REF-VAT",
+            f"desc_{row_id}": "VAT receipt",
+            f"amount_{row_id}": "1200.00",
+            f"date_{row_id}": "2026-11-20",
+            f"source_{row_id}": "Bank Transfer",
+            f"cleared_present_{row_id}": "1",
+            f"cleared_{row_id}": "on",
+            f"vat_{row_id}": "on",
+        },
+        follow_redirects=True,
+    )
+
+    oc_rows = db._get_office_cashbook_rows()
+    vat_row = next(r for r in oc_rows if r.get("import_batch_id") == batch_id)
+    assert vat_row["vat_applicable"] == 1
+    assert vat_row["vat_quarter_key"] == expected_key
+
+    _, boxes, summary, _, _ = app_module._vat_quarter_context(
+        "mar_jun_sep_dec", expected_key, vat_settings=db.get_vat_settings()
+    )
+    assert summary["output_vat"] == Decimal("200.00")
+    assert boxes["box1"] == Decimal("200.00")
+
+
+def test_unsubmitted_prior_quarter_reminder(client):
+    """Reminder shown when an older VAT quarter is open and a newer quarter has txns."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("feb_may_aug_nov", "admin")
+    from lib.vat import quarter_for_date
+    from datetime import date
+
+    nov_key = quarter_for_date(date(2026, 11, 15), "feb_may_aug_nov")["quarter_key"]
+    dec_key = quarter_for_date(date(2026, 12, 15), "feb_may_aug_nov")["quarter_key"]
+    _insert_vat_receipt(db, "2026-11-15")
+    _insert_vat_receipt(db, "2026-12-10")
+
+    active = app_module._resolve_vat_active_quarter("feb_may_aug_nov")
+    assert active["quarter_key"] == dec_key
+
+    reminders = app_module._vat_unsubmitted_quarter_reminders(
+        "feb_may_aug_nov", active["quarter_key"], db.get_vat_settings()
+    )
+    assert len(reminders) == 1
+    assert reminders[0]["quarter_key"] == nov_key
+    assert b"unsubmitted VAT quarter" in reminders[0]["message"].encode()
+
+    resp = client.get("/office-account")
+    assert resp.status_code == 200
+    assert b"Unsubmitted VAT Quarter" in resp.data
+    assert b"unsubmitted VAT quarter" in resp.data
+
+    # December summary only — November does not bleed in
+    _, _, dec_summary, _, dec_txns = app_module._vat_quarter_context(
+        "feb_may_aug_nov", dec_key, vat_settings=db.get_vat_settings()
+    )
+    assert len(dec_txns) == 1
+    assert dec_txns[0]["transaction_date"] == "2026-12-10"
+    assert dec_summary["output_vat"] == Decimal("200.00")
+
+    # Submit November — reminder clears, December still active
+    client.post(
+        "/office-account/vat/return/submit",
+        data={
+            "quarter_key": nov_key,
+            **{f"box{i}": "200.00" if i == 1 else "0.00" for i in range(1, 10)},
+        },
+        follow_redirects=True,
+    )
+    reminders_after = app_module._vat_unsubmitted_quarter_reminders(
+        "feb_may_aug_nov",
+        app_module._resolve_vat_active_quarter("feb_may_aug_nov")["quarter_key"],
+        db.get_vat_settings(),
+    )
+    assert reminders_after == []
+    resp2 = client.get("/office-account")
+    assert b"Unsubmitted VAT Quarter" not in resp2.data

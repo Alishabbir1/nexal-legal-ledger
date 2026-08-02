@@ -1191,6 +1191,58 @@ hr {
   white-space: nowrap;
 }
 
+/* VAT unsubmitted prior-quarter reminder (Office Account) */
+.vat-quarter-reminder {
+  background: linear-gradient(135deg, rgba(251,191,36,0.14) 0%, rgba(234,88,12,0.10) 100%);
+  border: 1px solid rgba(251,191,36,0.35);
+  border-left: 4px solid var(--warning);
+  border-radius: 8px;
+  color: inherit;
+  transition: background 0.15s ease;
+}
+.vat-quarter-reminder:hover {
+  background: linear-gradient(135deg, rgba(251,191,36,0.20) 0%, rgba(234,88,12,0.14) 100%);
+}
+.vat-quarter-reminder-inner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  flex-wrap: wrap;
+}
+.vat-quarter-reminder-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  background: rgba(251,191,36,0.18);
+  border: 1px solid rgba(251,191,36,0.4);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--warning);
+}
+.vat-quarter-reminder-icon svg { width: 16px; height: 16px; }
+.vat-quarter-reminder-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--warning);
+}
+.vat-quarter-reminder-desc {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  margin-top: 2px;
+}
+.vat-quarter-reminder-action {
+  margin-left: auto;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--warning);
+  white-space: nowrap;
+}
+
 /* Sidebar override status pill */
 .override-sidebar-status {
   margin: 10px 12px 4px;
