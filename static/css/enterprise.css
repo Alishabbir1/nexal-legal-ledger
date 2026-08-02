@@ -1139,6 +1139,58 @@ hr {
 }
 .override-banner-actions { margin-left: 12px; }
 
+/* VAT quarter-end alert banner (Office Account) */
+.vat-quarter-banner {
+  background: linear-gradient(135deg, rgba(248,113,113,0.16) 0%, rgba(220,38,38,0.12) 100%);
+  border: 1px solid rgba(248,113,113,0.35);
+  border-left: 4px solid var(--danger);
+  border-radius: 8px;
+  color: inherit;
+  transition: background 0.15s ease;
+}
+.vat-quarter-banner:hover {
+  background: linear-gradient(135deg, rgba(248,113,113,0.22) 0%, rgba(220,38,38,0.16) 100%);
+}
+.vat-quarter-banner-inner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  flex-wrap: wrap;
+}
+.vat-quarter-banner-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  background: rgba(248,113,113,0.18);
+  border: 1px solid rgba(248,113,113,0.4);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--danger);
+}
+.vat-quarter-banner-icon svg { width: 16px; height: 16px; }
+.vat-quarter-banner-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.vat-quarter-banner-desc {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  margin-top: 2px;
+}
+.vat-quarter-banner-action {
+  margin-left: auto;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--danger);
+  white-space: nowrap;
+}
+
 /* Sidebar override status pill */
 .override-sidebar-status {
   margin: 10px 12px 4px;

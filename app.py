@@ -1199,16 +1199,14 @@ def office_account():
     vat_active = bool(vat_settings.get('activated') and vat_settings.get('quarter_cycle'))
     vat_quarter = None
     vat_summary = None
+    vat_banner = None
     if vat_active:
+        cycle = vat_settings['quarter_cycle']
+        open_key = _open_vat_quarter_key(cycle)
         vat_quarter, vat_boxes, vat_summary, vat_return, _ = _vat_quarter_context(
-            vat_settings['quarter_cycle'], vat_settings=vat_settings
+            cycle, open_key, vat_settings=vat_settings
         )
-        if vat_return and vat_return.get('is_locked'):
-            vat_summary = {
-                'output_vat': Decimal(str(vat_return.get('box1') or 0)),
-                'input_vat': Decimal(str(vat_return.get('box4') or 0)),
-                'net_owed': Decimal(str(vat_return.get('box5') or 0)),
-            }
+        vat_banner = _vat_quarter_end_banner(cycle, vat_settings)
     else:
         from lib.vat import calculate_hmrc_boxes, quarter_summary_from_boxes
         txns = db._get_office_cashbook_rows()
@@ -1227,7 +1225,8 @@ def office_account():
                          vat_active=vat_active,
                          vat_settings=vat_settings,
                          vat_summary=vat_summary,
-                         vat_quarter=vat_quarter)
+                         vat_quarter=vat_quarter,
+                         vat_banner=vat_banner)
 
 
 @app.route('/office-account/add-income', methods=['GET', 'POST'])
@@ -1498,8 +1497,8 @@ def _vat_quarter_context(cycle_key: str, quarter_key: str = None, vat_settings: 
 
 
 def _open_vat_quarter_key(cycle_key: str, requested_key: str = None) -> str:
-    """Quarter key for the editable VAT return section (first non-locked quarter)."""
-    from lib.vat import current_quarter
+    """Quarter key for the editable VAT return (oldest unsubmitted in the open chain)."""
+    from lib.vat import current_quarter, is_quarter_ended, previous_quarter
 
     period_start = _vat_period_start()
 
@@ -1508,15 +1507,81 @@ def _open_vat_quarter_key(cycle_key: str, requested_key: str = None) -> str:
         if not rec or not rec.get('is_locked'):
             return requested_key
 
-    for candidate in (
-        _resolve_vat_display_quarter(cycle_key, period_start),
-        current_quarter(cycle_key, period_start_override=period_start),
-    ):
-        rec = db.get_vat_return(candidate['quarter_key'])
-        if not rec or not rec.get('is_locked'):
-            return candidate['quarter_key']
+    current = current_quarter(cycle_key, period_start_override=period_start)
+    chain = []
+    q = current
+    for _ in range(8):
+        rec = db.get_vat_return(q['quarter_key'])
+        if rec and rec.get('is_locked'):
+            break
+        chain.append(q)
+        q = previous_quarter(q, cycle_key, period_start)
 
-    return current_quarter(cycle_key, period_start_override=period_start)['quarter_key']
+    if not chain:
+        return current['quarter_key']
+
+    def quarter_has_activity(qtr):
+        txns = _filter_vat_scope_txns(
+            db.get_office_cashbook_for_vat_quarter(
+                qtr['quarter_start'], qtr['quarter_end']
+            ),
+            period_start,
+        )
+        if any(
+            t.get('vat_applicable')
+            and not t.get('is_vat_excluded')
+            and not t.get('is_deleted')
+            for t in txns
+        ):
+            return True
+        rec = db.get_vat_return(qtr['quarter_key'])
+        return bool(rec)
+
+    ended_with_activity = [
+        item for item in chain if is_quarter_ended(item) and quarter_has_activity(item)
+    ]
+    if ended_with_activity:
+        ended_with_activity.sort(key=lambda item: item['quarter_end'])
+        return ended_with_activity[0]['quarter_key']
+
+    ended_any = [item for item in chain if is_quarter_ended(item)]
+    if ended_any:
+        ended_any.sort(key=lambda item: item['quarter_end'])
+        return ended_any[0]['quarter_key']
+
+    return chain[0]['quarter_key']
+
+
+def _vat_quarter_end_banner(cycle_key: str, settings: Optional[Dict] = None) -> Optional[Dict]:
+    """Banner payload when an ended quarter's VAT return is still unsubmitted."""
+    from datetime import date
+    from lib.vat import is_quarter_ended, parse_date
+
+    settings = settings or db.get_vat_settings()
+    open_key = _open_vat_quarter_key(cycle_key)
+    quarter, _, _, vat_return, _ = _vat_quarter_context(
+        cycle_key, open_key, vat_settings=settings
+    )
+    if vat_return and vat_return.get('is_locked'):
+        return None
+    if not is_quarter_ended(quarter):
+        return None
+
+    q_end = parse_date(quarter['quarter_end'])
+    deadline = parse_date(quarter['submission_deadline'])
+    q_end_display = q_end.strftime('%d %b %Y') if q_end else quarter['quarter_end']
+    deadline_display = (
+        deadline.strftime('%d %b %Y') if deadline else quarter['submission_deadline']
+    )
+    return {
+        'message': (
+            f'Your VAT quarter ended {q_end_display}. '
+            f'Please review and submit your VAT return before {deadline_display}.'
+        ),
+        'quarter_key': open_key,
+        'quarter_end': quarter['quarter_end'],
+        'submission_deadline': quarter['submission_deadline'],
+    }
 
 
 def _vat_user_figures(vat_return: Optional[Dict], calculated: Dict) -> Dict:
@@ -1546,13 +1611,13 @@ def _vat_user_figures(vat_return: Optional[Dict], calculated: Dict) -> Dict:
 
 
 def _build_vat_history_entries(cycle_key: str) -> list:
-    """Submitted VAT quarters with summary figures and transaction breakdown."""
-    from lib.vat import quarter_ordinal_label, quarter_period_label
+    """Submitted VAT quarters with summary figures and submitted box values."""
+    from lib.vat import quarter_ordinal_label, quarter_period_label, parse_date
 
     vat_settings = db.get_vat_settings()
     entries = []
     for rec in db.list_vat_returns(locked_only=True):
-        quarter, _, _, _, txns = _vat_quarter_context(
+        quarter, _, _, _, _ = _vat_quarter_context(
             cycle_key, rec['quarter_key'], vat_settings=vat_settings
         )
         submitted_at = rec.get('submitted_at') or ''
@@ -1566,16 +1631,24 @@ def _build_vat_history_entries(cycle_key: str) -> list:
         else:
             submitted_display = '—'
 
+        q_end = parse_date(quarter['quarter_end'])
         entries.append({
             'quarter': quarter,
             'return': rec,
             'ordinal': quarter_ordinal_label(quarter, cycle_key),
             'period': quarter_period_label(quarter),
+            'quarter_end_display': (
+                q_end.strftime('%d %b %Y') if q_end else quarter['quarter_end']
+            ),
             'submitted_display': submitted_display,
             'output_vat': Decimal(str(rec.get('box1') or 0)),
             'input_vat': Decimal(str(rec.get('box4') or 0)),
             'net_owed': Decimal(str(rec.get('box5') or 0)),
-            'transactions': txns,
+            'submitted_boxes': {
+                f'box{i}': Decimal(str(rec.get(f'box{i}') or 0))
+                for i in range(1, 10)
+            },
+            'status': 'Submitted',
         })
     return entries
 

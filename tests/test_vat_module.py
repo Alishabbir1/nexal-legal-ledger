@@ -370,3 +370,126 @@ def test_vat_return_submit_locks_quarter(client):
     locked = db.get_vat_return(quarter["quarter_key"])
     assert locked["is_locked"] == 1
     assert locked["hmrc_reference"] == "TEST-REF-123"
+
+
+def test_quarter_end_banner_shows_when_unsubmitted(client, monkeypatch):
+    """Red banner appears when quarter has ended and return not submitted."""
+    from datetime import date
+    import lib.vat as vat_module
+
+    class FakeDate(date):
+        @classmethod
+        def today(cls):
+            return date(2027, 1, 15)
+
+    monkeypatch.setattr(vat_module, "date", FakeDate)
+
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-11-15")
+
+    resp = client.get("/office-account")
+    assert resp.status_code == 200
+    assert b"VAT Return Due" in resp.data
+    assert b"Your VAT quarter ended" in resp.data
+    assert b"submit your VAT return before" in resp.data
+
+
+def test_quarter_end_banner_hidden_after_submit(client, monkeypatch):
+    """Banner disappears once the ended quarter is submitted."""
+    from datetime import date
+    import lib.vat as vat_module
+    from lib.vat import quarter_for_date
+
+    class FakeDate(date):
+        @classmethod
+        def today(cls):
+            return date(2027, 1, 15)
+
+    monkeypatch.setattr(vat_module, "date", FakeDate)
+
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    q4 = quarter_for_date(date(2026, 11, 15), "mar_jun_sep_dec")
+    _insert_vat_receipt(db, "2026-11-15")
+
+    client.post(
+        "/office-account/vat/return/submit",
+        data={
+            "quarter_key": q4["quarter_key"],
+            **{f"box{i}": "200.00" if i == 1 else "0.00" for i in range(1, 10)},
+        },
+        follow_redirects=True,
+    )
+
+    resp = client.get("/office-account")
+    assert resp.status_code == 200
+    assert b"VAT Return Due" not in resp.data
+
+
+def test_clean_quarter_start_after_submit(client, monkeypatch):
+    """New quarter summary resets to zero; previous quarter txns do not bleed in."""
+    from datetime import date
+    import lib.vat as vat_module
+    from lib.vat import quarter_for_date
+
+    class FakeDate(date):
+        @classmethod
+        def today(cls):
+            return date(2027, 1, 15)
+
+    monkeypatch.setattr(vat_module, "date", FakeDate)
+
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    q4 = quarter_for_date(date(2026, 11, 15), "mar_jun_sep_dec")
+    _insert_vat_receipt(db, "2026-11-15")
+
+    client.post(
+        "/office-account/vat/return/submit",
+        data={
+            "quarter_key": q4["quarter_key"],
+            **{f"box{i}": "200.00" if i == 1 else "0.00" for i in range(1, 10)},
+        },
+        follow_redirects=True,
+    )
+
+    resp = client.get("/office-account")
+    assert resp.status_code == 200
+    assert b"Jan" in resp.data or b"2027" in resp.data
+    assert b"0.00" in resp.data
+
+    cycle = db.get_vat_settings()["quarter_cycle"]
+    open_key = app_module._open_vat_quarter_key(cycle)
+    _, boxes, summary, _, txns = app_module._vat_quarter_context(
+        cycle, open_key, vat_settings=db.get_vat_settings()
+    )
+    assert open_key == "2027-03-31"
+    assert len(txns) == 0
+    assert summary["output_vat"] == Decimal("0.00")
+    assert boxes["box1"] == Decimal("0.00")
+
+
+def test_vat_history_shows_submitted_boxes(client):
+    """Submitted quarter history accordion includes all 9 HMRC box figures."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    from lib.vat import current_quarter
+
+    quarter = current_quarter("mar_jun_sep_dec")
+    boxes = {f"box{i}": Decimal("0") for i in range(1, 10)}
+    boxes["box1"] = Decimal("150.00")
+    boxes["box5"] = Decimal("150.00")
+    db.save_vat_return_draft(quarter, boxes, boxes, "admin")
+    db.submit_vat_return(quarter["quarter_key"], boxes, "admin", "HMRC-999")
+
+    resp = client.get(f"/office-account/vat/return?expand={quarter['quarter_key']}")
+    assert resp.status_code == 200
+    assert b"Quarter History" in resp.data
+    assert b"Submitted figure" in resp.data
+    assert b"150.00" in resp.data
+    assert b"Submitted" in resp.data

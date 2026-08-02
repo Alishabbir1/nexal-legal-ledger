@@ -195,6 +195,28 @@ def quarter_period_label(quarter: dict[str, Any]) -> str:
     return f'{sm} {start.year}–{em} {end.year}'
 
 
+def is_quarter_ended(quarter: dict[str, Any], as_of: Optional[date] = None) -> bool:
+    """True when as_of is strictly after the quarter end date."""
+    end = parse_date(quarter.get('quarter_end'))
+    if not end:
+        return False
+    return (as_of or date.today()) > end
+
+
+def previous_quarter(
+    quarter: dict[str, Any],
+    cycle_key: str,
+    period_start_override: Optional[date] = None,
+) -> dict[str, Any]:
+    """Quarter immediately before the given quarter."""
+    start = parse_date(quarter.get('quarter_start'))
+    if not start:
+        return quarter
+    return quarter_for_date(
+        start - timedelta(days=1), cycle_key, period_start_override
+    )
+
+
 def quarter_ordinal_label(quarter: dict[str, Any], cycle_key: str) -> str:
     """Ordinal label e.g. Q4 2026 from quarter end within the firm's cycle."""
     end = parse_date(quarter.get('quarter_end'))

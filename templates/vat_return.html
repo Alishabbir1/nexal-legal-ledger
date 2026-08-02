@@ -112,132 +112,80 @@
 {% if submitted_history %}
 <div class="card" style="margin-top: 20px;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
-        <h3 style="margin: 0;">VAT Return History</h3>
+        <h3 style="margin: 0;">Quarter History</h3>
         <div style="display: flex; gap: 8px; align-items: center;">
             <span style="font-size: 12px; color: var(--text-muted);">
-                {{ submitted_history|length }} quarter{{ 's' if submitted_history|length != 1 }}
+                {{ submitted_history|length }} submitted quarter{{ 's' if submitted_history|length != 1 }}
             </span>
             <button type="button" class="btn btn-secondary btn-sm" id="vat-expand-all" style="padding: 4px 12px; font-size: 12px;">Expand All</button>
             <button type="button" class="btn btn-secondary btn-sm" id="vat-collapse-all" style="padding: 4px 12px; font-size: 12px;">Collapse All</button>
         </div>
     </div>
 
-    <div style="overflow-x: auto;">
-        <table class="archive-month-table">
-            <thead>
-                <tr>
-                    <th>Quarter</th>
-                    <th>Period</th>
-                    <th>Submitted</th>
-                    <th style="text-align: right;">Output VAT</th>
-                    <th style="text-align: right;">Input VAT</th>
-                    <th style="text-align: right;">Net Owed</th>
-                    <th style="text-align: center;">Status</th>
-                    <th style="text-align: center;">Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for entry in submitted_history %}
-                {% set qkey = entry.quarter.quarter_key %}
-                {% set is_expanded = expand_key == qkey %}
-                <tr class="recon-history-row vat-history-row"
-                    data-quarter-key="{{ qkey }}">
-                    <td style="font-weight: 700; color: var(--text-primary);">{{ entry.ordinal }}</td>
-                    <td style="color: var(--text-secondary); font-size: 13px;">{{ entry.period }}</td>
-                    <td style="font-family: var(--font-mono); color: var(--text-secondary); font-size: 13px;">
-                        {{ entry.submitted_display }}
-                    </td>
-                    <td style="text-align: right; font-family: var(--font-mono); color: var(--success);">
-                        £{{ "{:,.2f}".format(entry.output_vat|float) }}
-                    </td>
-                    <td style="text-align: right; font-family: var(--font-mono); color: var(--danger);">
-                        £{{ "{:,.2f}".format(entry.input_vat|float) }}
-                    </td>
-                    <td style="text-align: right; font-family: var(--font-mono); font-weight: 600;">
-                        £{{ "{:,.2f}".format(entry.net_owed|float) }}
-                    </td>
-                    <td style="text-align: center;">
-                        <span class="status-badge status-cleared" style="font-size: 11px;">Submitted</span>
-                    </td>
-                    <td style="text-align: center;">
-                        <button type="button"
-                                class="btn btn-secondary btn-sm view-vat-btn"
-                                data-quarter-key="{{ qkey }}"
-                                data-expanded="{{ '1' if is_expanded else '0' }}"
-                                style="padding: 4px 14px;">
-                            {{ 'Hide' if is_expanded else 'View' }}
-                        </button>
-                    </td>
-                </tr>
-                <tr class="vat-detail-row" id="vat-detail-{{ qkey | replace(':', '-') }}"
-                    style="{% if not is_expanded %}display: none;{% endif %}">
-                    <td colspan="8" style="padding: 0; background: var(--bg-base); border-bottom: 1px solid var(--border-subtle);">
-                        <div class="vat-detail-panel">
-                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
-                                <div>
-                                    <strong style="font-size: 13px;">{{ entry.ordinal }} — {{ entry.period }}</strong>
-                                    {% if entry.return.submitted_by %}
-                                    <span style="font-size: 12px; color: var(--text-muted); margin-left: 8px;">
-                                        by {{ entry.return.submitted_by }}
-                                    </span>
-                                    {% endif %}
-                                </div>
-                                <span style="font-size: 12px; color: var(--text-muted);">
-                                    {{ entry.transactions|length }} transaction{{ 's' if entry.transactions|length != 1 }}
-                                </span>
-                            </div>
-                            <div style="overflow-x: auto;">
-                                <table class="archive-month-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Date</th>
-                                            <th>Type</th>
-                                            <th>Description</th>
-                                            <th style="text-align: right;">Gross</th>
-                                            <th style="text-align: right;">Net</th>
-                                            <th style="text-align: right;">VAT</th>
-                                            <th>VAT?</th>
-                                            <th>Status</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {% for t in entry.transactions %}
-                                        <tr{% if t.needs_vat_re_review %} style="background: rgba(234,179,8,0.08);"{% endif %}>
-                                            <td style="font-family: var(--font-mono); font-size: 13px;">{{ t.transaction_date }}</td>
-                                            <td>{{ t.transaction_type }}</td>
-                                            <td>{{ t.description or t.reference }}</td>
-                                            <td style="text-align: right; font-family: var(--font-mono);">
-                                                £{{ "{:,.2f}".format((t.gross_amount or t.amount)|float) }}
-                                            </td>
-                                            <td style="text-align: right; font-family: var(--font-mono);">
-                                                £{{ "{:,.2f}".format((t.net_amount or t.amount)|float) }}
-                                            </td>
-                                            <td style="text-align: right; font-family: var(--font-mono);">
-                                                £{{ "{:,.2f}".format((t.vat_amount or 0)|float) }}
-                                            </td>
-                                            <td>{% if t.vat_applicable %}Yes{% else %}No{% endif %}</td>
-                                            <td>
-                                                {% if t.is_vat_excluded %}Excluded
-                                                {% elif t.needs_vat_re_review %}Re-review
-                                                {% else %}OK{% endif %}
-                                            </td>
-                                        </tr>
-                                        {% else %}
-                                        <tr>
-                                            <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 16px;">
-                                                No transactions in this quarter
-                                            </td>
-                                        </tr>
-                                        {% endfor %}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="vat-history-accordion">
+        {% set box_labels = {
+            'box1': 'VAT due on sales and other outputs',
+            'box2': 'VAT due on acquisitions from EC (N/A)',
+            'box3': 'Total VAT due (Box 1 + Box 2)',
+            'box4': 'VAT reclaimed on purchases and inputs',
+            'box5': 'Net VAT to pay / reclaim (Box 3 − Box 4)',
+            'box6': 'Total value of sales excluding VAT',
+            'box7': 'Total value of purchases excluding VAT',
+            'box8': 'Total value of supplies to EC (N/A)',
+            'box9': 'Total value of acquisitions from EC (N/A)',
+        } %}
+        {% for entry in submitted_history %}
+        {% set qkey = entry.quarter.quarter_key %}
+        {% set is_expanded = expand_key == qkey %}
+        <div class="vat-history-item" data-quarter-key="{{ qkey }}">
+            <button type="button" class="vat-history-toggle view-vat-btn"
+                    data-quarter-key="{{ qkey }}"
+                    data-expanded="{{ '1' if is_expanded else '0' }}"
+                    aria-expanded="{{ 'true' if is_expanded else 'false' }}">
+                <span class="vat-history-chevron{% if is_expanded %} expanded{% endif %}">▸</span>
+                <span class="vat-history-period">{{ entry.period }}</span>
+                <span class="vat-history-end">End: {{ entry.quarter_end_display }}</span>
+                <span class="status-badge status-cleared vat-history-status">{{ entry.status }}</span>
+            </button>
+            <div class="vat-history-panel" id="vat-detail-{{ qkey | replace(':', '-') }}"
+                 {% if not is_expanded %}style="display: none;"{% endif %}>
+                <div class="vat-history-panel-inner">
+                    <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 12px;">
+                        Submitted {{ entry.submitted_display }}
+                        {% if entry.return.hmrc_reference %}
+                        · HMRC ref: {{ entry.return.hmrc_reference }}
+                        {% endif %}
+                        {% if entry.return.submitted_by %}
+                        · by {{ entry.return.submitted_by }}
+                        {% endif %}
+                    </p>
+                    <div style="overflow-x: auto;">
+                        <table class="archive-month-table">
+                            <thead>
+                                <tr>
+                                    <th>Box</th>
+                                    <th>Description</th>
+                                    <th style="text-align: right;">Submitted figure</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for i in range(1, 10) %}
+                                {% set key = 'box' ~ i %}
+                                <tr>
+                                    <td><strong>{{ i }}</strong></td>
+                                    <td>{{ box_labels[key] }}</td>
+                                    <td style="text-align: right; font-family: var(--font-mono);">
+                                        £{{ "{:,.2f}".format(entry.submitted_boxes[key]|float) }}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
     </div>
 </div>
 {% endif %}
@@ -262,14 +210,62 @@
     padding: 11px 14px;
     font-size: 13px;
 }
-.recon-history-row { border-bottom: 1px solid var(--border-subtle); }
-.recon-history-row:last-child { border-bottom: none; }
-.recon-history-row:hover td { background: var(--bg-elevated) !important; }
-.vat-detail-panel {
+.vat-history-accordion {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.vat-history-item {
+    border-bottom: 1px solid var(--border-subtle);
+}
+.vat-history-item:last-child {
+    border-bottom: none;
+}
+.vat-history-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--bg-elevated);
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: var(--text-primary);
+}
+.vat-history-toggle:hover {
+    background: var(--bg-base);
+}
+.vat-history-chevron {
+    display: inline-block;
+    width: 14px;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+.vat-history-chevron.expanded {
+    transform: rotate(90deg);
+}
+.vat-history-period {
+    font-weight: 600;
+    flex: 1;
+}
+.vat-history-end {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+.vat-history-status {
+    font-size: 11px;
+}
+.vat-history-panel-inner {
     padding: 16px 18px 18px;
+    background: var(--bg-base);
     border-top: 1px solid var(--border-subtle);
 }
-.vat-detail-row td { vertical-align: top; }
 </style>
 
 <script>
@@ -282,9 +278,13 @@
         var detail = document.getElementById(detailId(quarterKey));
         var btn = document.querySelector('.view-vat-btn[data-quarter-key="' + quarterKey + '"]');
         if (!detail || !btn) return;
-        detail.style.display = open ? 'table-row' : 'none';
-        btn.textContent = open ? 'Hide' : 'View';
+        detail.style.display = open ? 'block' : 'none';
         btn.dataset.expanded = open ? '1' : '0';
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        var chevron = btn.querySelector('.vat-history-chevron');
+        if (chevron) {
+            chevron.classList.toggle('expanded', open);
+        }
     }
 
     document.querySelectorAll('.view-vat-btn').forEach(function(btn) {
