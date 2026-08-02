@@ -158,15 +158,26 @@
     {% endif %}
     {# ────────────────────────────────────────────────────────────── #}
 
+    {% if not vat_module_active %}
+    <div style="background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25);
+                border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px;">
+        <strong>VAT tagging is available on this screen.</strong>
+        Tick rows that include 20% VAT. To see the VAT summary panel with quarter deadlines on the
+        Office Account page, <a href="{{ url_for('vat_setup') }}">activate the VAT module</a> first.
+    </div>
+    {% endif %}
+
     <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
         Review every row below.
         <strong>Uncheck</strong> rows you do not want to import.
         Edit <em>Date</em>, <em>Description</em>, <em>Reference</em>, and <em>Amount</em> where needed.
         Use the <em>Cleared</em> column to mark any uncleared items.
+        Tick <em>VAT (20%)</em> for receipts or expenses that include VAT — net and VAT split show inline.
         Click <strong>Approve Import</strong> when ready — only checked rows will be saved.
     </p>
 
     <form method="POST" action="{{ url_for('office_import_approve') }}" id="approveForm">
+        <!-- VAT-COLUMN-ENABLED-v2: Source | VAT (20%) | Cleared -->
         <input type="hidden" name="batch_id" value="{{ batch_id }}">
         {% if balance_match == 'mismatch' %}
         <input type="hidden" name="confirm_balance_mismatch" id="mismatchHidden" value="">
@@ -186,6 +197,8 @@
                         <th style="padding: 8px 10px; min-width: 200px;">Description</th>
                         <th style="padding: 8px 10px; min-width: 160px;">Reference</th>
                         <th style="padding: 8px 10px; min-width: 130px;">Source</th>
+                        <!-- VAT-COLUMN-ENABLED-v2 -->
+                        <th style="white-space:nowrap; min-width:140px;">VAT (20%)</th>
                         <th style="padding: 8px 10px; text-align: center; white-space: nowrap;"
                             title="Cleared: counted in totals immediately. Uncleared: held as Pending until manually confirmed.">
                             Cleared
@@ -260,6 +273,15 @@
                                          background: rgba(234,179,8,0.25); color: #b45309;
                                          border-radius: 4px; padding: 1px 5px;">
                                 ⚠ DUP
+                            </span>
+                            {% endif %}
+                            {% if row.is_desc_amount_duplicate %}
+                            <span title="Same description and amount as another row"
+                                  style="display: inline-block; margin-left: 4px;
+                                         font-size: 10px; font-weight: 700;
+                                         background: rgba(249,115,22,0.2); color: #c2410c;
+                                         border-radius: 4px; padding: 1px 5px;">
+                                ⚠ DESC
                             </span>
                             {% endif %}
                         </td>
@@ -342,6 +364,21 @@
                             {% endif %}
                         </td>
 
+                        <td style="white-space:nowrap;">
+                            {% if is_bf %}
+                            <span style="font-size: 12px; color: var(--text-muted);">—</span>
+                            {% else %}
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="checkbox" name="vat_{{ row.id }}" value="on" class="vat-checkbox" data-amount="{{ (row.amount|float)|abs }}" style="width:16px; height:16px; cursor:pointer;"{% if vat_rules.get(row.description) or row.vat_applicable %} checked{% endif %}>
+                                <span style="font-size:12px; color:var(--text-secondary);">VAT</span>
+                                {% if row.description in vat_rules %}
+                                <span style="font-size:10px; font-weight:600; color:var(--accent); background:var(--accent-dim, rgba(99,102,241,0.12)); padding:1px 6px; border-radius:4px;">Auto</span>
+                                {% endif %}
+                            </label>
+                            <span class="vat-split" style="display:none; font-size:11px; color:green; margin-top:3px;"></span>
+                            {% endif %}
+                        </td>
+
                         <td style="text-align: center; padding: 6px 10px;">
                             {% if is_bf %}
                             <span style="font-size: 12px; color: var(--text-muted);">—</span>
@@ -364,6 +401,7 @@
                             </label>
                             {% endif %}
                         </td>
+
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -634,20 +672,15 @@
     var form = document.getElementById('approveForm');
     if (form && approveBtn) {
         form.addEventListener('submit', function (e) {
-            // The bottom Cancel button uses formaction so it submits this form
-            // to the cancel route instead of the approve route.  Skip all
-            // approve-path validation when that button is the submitter.
             if (e.submitter && e.submitter.id === 'cancelBottomBtn') {
-                return; // proceed directly to cancel route — no validation needed
+                return;
             }
-
             var checked = document.querySelectorAll('.row-keep:checked').length;
             if (checked === 0) {
                 e.preventDefault();
                 alert('No rows are selected. Please select at least one transaction or cancel the import.');
                 return;
             }
-            // Validate all amount inputs before submit
             var invalid = false;
             document.querySelectorAll('.amount-input').forEach(function (inp) {
                 var v = parseFloat(inp.value);
@@ -666,17 +699,39 @@
         });
     }
 
-    /* ── Initial render ──────────────────────────────────────────── */
     updateCount();
-    // Apply cleared-label state for every row
     document.querySelectorAll('.cleared-check').forEach(function(cb) {
         onClearedChange(cb);
     });
-    // Apply source-specific behaviour (e.g. Cheque disables Cleared checkbox)
-    // for rows where the parser auto-detected a non-default source.
     document.querySelectorAll('.source-select').forEach(function(sel) {
         onSourceChange(sel);
     });
+
 })();
+</script>
+<script>
+document.querySelectorAll('.vat-checkbox').forEach(function(cb) {
+  cb.addEventListener('change', function() {
+    var gross = parseFloat(this.dataset.amount);
+    var net = (gross / 1.2).toFixed(2);
+    var vat = (gross - gross / 1.2).toFixed(2);
+    var split = this.closest('td').querySelector('.vat-split');
+    if (!split) return;
+    if (this.checked) {
+      split.textContent = 'Net £' + net + ' · VAT £' + vat;
+      split.style.display = 'block';
+    } else {
+      split.style.display = 'none';
+    }
+  });
+  var amountInput = cb.closest('tr') && cb.closest('tr').querySelector('.amount-input');
+  if (amountInput) {
+    amountInput.addEventListener('input', function() {
+      cb.dataset.amount = Math.abs(parseFloat(amountInput.value) || 0);
+      if (cb.checked) cb.dispatchEvent(new Event('change'));
+    });
+  }
+  if (cb.checked) cb.dispatchEvent(new Event('change'));
+});
 </script>
 {% endblock %}

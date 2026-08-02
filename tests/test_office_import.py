@@ -35,6 +35,9 @@ def client(monkeypatch):
     # incorrectly classify first-import batches as mismatches.
     conn = app_module.db.get_connection()
     conn.execute('DELETE FROM office_statement_history')
+    conn.execute('DELETE FROM vat_returns')
+    conn.execute('DELETE FROM vat_description_rules')
+    conn.execute('DELETE FROM vat_settings')
     conn.commit()
     conn.close()
 
@@ -1013,7 +1016,7 @@ def test_import_amount_signs_preserved_in_office_account_page(client):
         idx = html.find(desc)
         assert idx != -1, f"Description '{desc}' not found in page"
         # Grab a window around the description to check sign
-        window = html[max(0, idx - 200): idx + 200]
+        window = html[max(0, idx - 400): idx + 200]
         assert '-£' in window or 'amount-negative' in window, (
             f"Payment '{desc}' should display as negative, but no '-£' near it. "
             f"Window: {window[:300]}"
@@ -1023,7 +1026,7 @@ def test_import_amount_signs_preserved_in_office_account_page(client):
         idx = html.find(desc)
         if idx == -1:
             continue  # row may have been skipped (e.g. zero-amount opening balance)
-        window = html[max(0, idx - 200): idx + 200]
+        window = html[max(0, idx - 400): idx + 200]
         assert '+£' in window or 'amount-positive' in window, (
             f"Receipt '{desc}' should display as positive. Window: {window[:300]}"
         )

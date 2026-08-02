@@ -14,7 +14,50 @@
            title="Upload a bank statement CSV to bulk-import Office Account transactions">
             ↑ Upload Bank Statement
         </a>
+        {% if not vat_active %}
+        <a href="{{ url_for('vat_setup') }}" class="btn btn-secondary">Activate VAT Module</a>
+        {% else %}
+        <a href="{{ url_for('vat_return') }}" class="btn btn-secondary">VAT Return</a>
+        {% endif %}
     </div>
+
+    {% if vat_summary %}
+    <div class="card" style="border-left: 4px solid var(--accent); margin-bottom: 20px;">
+        <h3 style="margin: 0 0 12px;">VAT Summary{% if vat_quarter %} — Current Quarter{% endif %}</h3>
+        {% if vat_quarter %}
+        <p style="font-size: 13px; color: var(--text-muted); margin: 0 0 16px;">
+            Period: <strong>{{ vat_quarter.label }}</strong>
+            {% if vat_settings.period_start_override %}
+            · VAT tracking from {{ vat_settings.period_start_override }}
+            {% endif %}
+            · Quarter ends {{ vat_quarter.quarter_end }} ·
+            Submission deadline {{ vat_quarter.submission_deadline }}
+            ({{ vat_quarter.days_until_deadline }} days)
+        </p>
+        {% elif not vat_active %}
+        <p style="font-size: 13px; color: var(--text-muted); margin: 0 0 16px;">
+            Totals from approved transactions. <a href="{{ url_for('vat_setup') }}">Activate the VAT module</a> for quarter deadlines.
+        </p>
+        {% endif %}
+        <div class="stat-grid">
+            <div class="stat-card">
+                <div class="stat-label">Output VAT (collected from receipts)</div>
+                <div class="stat-value success">£{{ "{:,.2f}".format(vat_summary.output_vat|float) }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Input VAT (paid on expenses)</div>
+                <div class="stat-value danger">£{{ "{:,.2f}".format(vat_summary.input_vat|float) }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Net owed to HMRC</div>
+                <div class="stat-value accent">£{{ "{:,.2f}".format(vat_summary.net_owed|float) }}</div>
+            </div>
+        </div>
+        {% if vat_active %}
+        <a href="{{ url_for('vat_return') }}" class="btn btn-secondary" style="margin-top: 8px;">View VAT Return →</a>
+        {% endif %}
+    </div>
+    {% endif %}
     
     <div class="stat-grid">
         <div class="stat-card">
@@ -60,6 +103,7 @@
                 <th>Date</th>
                 <th>Type</th>
                 <th>Amount</th>
+                {% if vat_active %}<th>VAT</th>{% endif %}
                 <th>Reference</th>
                 <th>Source</th>
                 <th>Status</th>
@@ -79,6 +123,21 @@
                 <td class="{% if is_positive %}amount-positive{% else %}amount-negative{% endif %}{% if status == 'Pending' %}" style="opacity: 0.6;{% elif status == 'Declined' %}" style="text-decoration: line-through;{% endif %}">
                     {% if is_positive %}+{% else %}-{% endif %}£{{ "{:,.2f}".format(trans.amount|float|abs) }}
                 </td>
+                {% if vat_active %}
+                <td style="font-size: 12px;">
+                    {% if trans.get('vat_applicable') %}
+                    <span title="Net £{{ '{:,.2f}'.format((trans.net_amount or trans.amount)|float) }} + VAT £{{ '{:,.2f}'.format((trans.vat_amount or 0)|float) }}">
+                        ✓ 20%
+                    </span>
+                    {% if trans.get('needs_vat_re_review') %}
+                    <br><small style="color: #b45309;">Re-review</small>
+                    {% endif %}
+                    {% if trans.get('is_vat_excluded') %}
+                    <br><small style="color: var(--text-muted);">Excluded</small>
+                    {% endif %}
+                    {% else %}—{% endif %}
+                </td>
+                {% endif %}
                 <td>{{ trans.reference }}</td>
                 <td>{{ trans.source }}</td>
                 <td>

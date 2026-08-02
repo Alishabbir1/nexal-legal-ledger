@@ -103,6 +103,9 @@ validate_production_secrets(
 )
 app = _app
 app.secret_key = _flask_secret
+if os.environ.get('NEXAL_DEV') == '1':
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
+    app.jinja_env.auto_reload = True
 app.config['PERMANENT_SESSION_LIFETIME'] = 900  # 15 minutes inactivity
 app.config['WTF_CSRF_TIME_LIMIT'] = 3600       # 1 hour CSRF token validity
 
@@ -252,7 +255,7 @@ def current_username() -> str:
 def handle_csrf_error(e):
     """Return a clear error when a CSRF token is missing or invalid."""
     flash('Your session has expired or the form was submitted incorrectly. Please try again.', 'error')
-    return redirect(request.referrer or url_for('dashboard'))
+    return redirect(request.referrer or url_for('index'))
 
 
 def current_role() -> str:
@@ -1180,7 +1183,28 @@ def office_account():
                 pending_total += Decimal(str(trans.get('amount', 0)))
             else:
                 pending_total -= Decimal(str(abs(trans.get('amount', 0))))
-    
+
+    vat_settings = db.get_vat_settings()
+    vat_active = bool(vat_settings.get('activated') and vat_settings.get('quarter_cycle'))
+    vat_quarter = None
+    vat_summary = None
+    if vat_active:
+        vat_quarter, vat_boxes, vat_summary, vat_return, _ = _vat_quarter_context(
+            vat_settings['quarter_cycle'], vat_settings=vat_settings
+        )
+        if vat_return and vat_return.get('is_locked'):
+            vat_summary = {
+                'output_vat': Decimal(str(vat_return.get('box1') or 0)),
+                'input_vat': Decimal(str(vat_return.get('box4') or 0)),
+                'net_owed': Decimal(str(vat_return.get('box5') or 0)),
+            }
+    else:
+        from lib.vat import calculate_hmrc_boxes, quarter_summary_from_boxes
+        txns = db._get_office_cashbook_rows()
+        if any(t.get('vat_applicable') for t in txns):
+            boxes = calculate_hmrc_boxes(txns)
+            vat_summary = quarter_summary_from_boxes(boxes)
+
     return render_template('office_account.html',
                          transactions=transactions,
                          office_balance=office_balance,
@@ -1188,7 +1212,11 @@ def office_account():
                          office_expenses=office_expenses,
                          pending_total=pending_total,
                          date_from=date_from,
-                         date_to=date_to)
+                         date_to=date_to,
+                         vat_active=vat_active,
+                         vat_settings=vat_settings,
+                         vat_summary=vat_summary,
+                         vat_quarter=vat_quarter)
 
 
 @app.route('/office-account/add-income', methods=['GET', 'POST'])
@@ -1306,18 +1334,239 @@ def _flag_import_duplicates(rows):
     Checks:
       1. Internal: same date + amount + type appears more than once in the batch.
       2. External: matching record already exists in office_cashbook.
+      3. Same description + amount (within batch).
     """
     seen = {}
+    seen_desc_amount = {}
     for row in rows:
         key = (row['date'], str(row['amount']), row['transaction_type'])
         row['is_duplicate'] = key in seen
         if not row['is_duplicate']:
-            # Check against existing office_cashbook records
             row['is_duplicate'] = db.office_cashbook_duplicate_exists(
                 row['date'], str(row['amount']), row['transaction_type']
             )
         seen[key] = True
+
+        desc_norm = (row.get('description') or '').strip().lower()
+        desc_key = (desc_norm, str(row['amount']))
+        row['is_desc_amount_duplicate'] = bool(
+            desc_norm and desc_key in seen_desc_amount
+        )
+        if desc_norm:
+            seen_desc_amount[desc_key] = True
     return rows
+
+
+def _vat_is_active() -> bool:
+    settings = db.get_vat_settings()
+    from lib.vat import VALID_CYCLES
+    return bool(
+        settings.get('activated')
+        and settings.get('quarter_cycle') in VALID_CYCLES
+    )
+
+
+def _vat_period_start(settings: dict | None = None):
+    from lib.vat import parse_date
+    settings = settings or db.get_vat_settings()
+    return parse_date(settings.get('period_start_override'))
+
+
+def _require_valid_vat_cycle(settings: dict | None = None):
+    """Return (cycle_key, None) or (None, redirect_response) if settings corrupt."""
+    from lib.vat import VALID_CYCLES
+    settings = settings or db.get_vat_settings()
+    cycle = settings.get('quarter_cycle') if settings else None
+    if not cycle or cycle not in VALID_CYCLES:
+        flash(
+            'VAT quarter settings are missing or corrupted. Please reconfigure.',
+            'error',
+        )
+        return None, redirect(url_for('vat_setup', reconfigure=1))
+    return cycle, None
+
+
+def _filter_vat_scope_txns(txns: list, period_start) -> list:
+    from lib.vat import transaction_on_or_after_period_start
+    if not period_start:
+        return txns
+    return [
+        t for t in txns
+        if transaction_on_or_after_period_start(t.get('transaction_date'), period_start)
+    ]
+
+
+def _parse_vat_period_start_form(raw: str | None) -> str | None:
+    """Parse optional period start from setup form (YYYY-MM-DD)."""
+    raw = (raw or '').strip()
+    if not raw:
+        return None
+    try:
+        datetime.strptime(raw[:10], '%Y-%m-%d')
+        return raw[:10]
+    except ValueError:
+        return None
+
+
+def _resolve_vat_display_quarter(cycle_key: str, period_start=None) -> dict:
+    """
+    Quarter shown on Office Account VAT summary and default VAT return.
+
+    Uses the calendar-current quarter when it contains VAT transactions;
+    otherwise the quarter of the most recent VAT-tagged approved transaction
+    (so a newly imported statement in another quarter still appears in summaries).
+    """
+    from lib.vat import current_quarter, quarter_for_date, parse_date
+
+    if period_start is None:
+        period_start = _vat_period_start()
+
+    current = current_quarter(cycle_key, period_start_override=period_start)
+    txns = _filter_vat_scope_txns(
+        db.get_office_cashbook_for_vat_quarter(
+            current['quarter_start'], current['quarter_end']
+        ),
+        period_start,
+    )
+    if any(
+        t.get('vat_applicable')
+        and not t.get('is_vat_excluded')
+        and not t.get('is_deleted')
+        for t in txns
+    ):
+        return current
+
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT transaction_date FROM office_cashbook
+            WHERE COALESCE(is_deleted, 0) = 0
+              AND COALESCE(is_vat_excluded, 0) = 0
+              AND vat_applicable = 1
+            ORDER BY transaction_date DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row:
+        d = parse_date(row['transaction_date'])
+        if d:
+            return quarter_for_date(d, cycle_key, period_start_override=period_start)
+    return current
+
+
+def _vat_quarter_context(cycle_key: str, quarter_key: str = None, vat_settings: dict = None):
+    from lib.vat import current_quarter, calculate_hmrc_boxes, quarter_summary_from_boxes
+    from lib.vat import parse_date, quarter_for_date
+
+    vat_settings = vat_settings or db.get_vat_settings()
+    period_start = _vat_period_start(vat_settings)
+
+    if quarter_key:
+        q_end = parse_date(quarter_key)
+        if q_end:
+            quarter = quarter_for_date(q_end, cycle_key, period_start_override=period_start)
+        else:
+            quarter = _resolve_vat_display_quarter(cycle_key, period_start)
+    else:
+        quarter = _resolve_vat_display_quarter(cycle_key, period_start)
+
+    txns = _filter_vat_scope_txns(
+        db.get_office_cashbook_for_vat_quarter(
+            quarter['quarter_start'], quarter['quarter_end']
+        ),
+        period_start,
+    )
+    boxes = calculate_hmrc_boxes(txns)
+    summary = quarter_summary_from_boxes(boxes)
+    vat_return = db.get_vat_return(quarter['quarter_key'])
+    return quarter, boxes, summary, vat_return, txns
+
+
+def _open_vat_quarter_key(cycle_key: str, requested_key: str = None) -> str:
+    """Quarter key for the editable VAT return section (first non-locked quarter)."""
+    from lib.vat import current_quarter
+
+    period_start = _vat_period_start()
+
+    if requested_key:
+        rec = db.get_vat_return(requested_key)
+        if not rec or not rec.get('is_locked'):
+            return requested_key
+
+    for candidate in (
+        _resolve_vat_display_quarter(cycle_key, period_start),
+        current_quarter(cycle_key, period_start_override=period_start),
+    ):
+        rec = db.get_vat_return(candidate['quarter_key'])
+        if not rec or not rec.get('is_locked'):
+            return candidate['quarter_key']
+
+    return current_quarter(cycle_key, period_start_override=period_start)['quarter_key']
+
+
+def _vat_user_figures(vat_return: dict | None, calculated: dict) -> dict:
+    """
+    Your-figure box values for an open VAT return.
+
+    Defaults to fresh calculated totals. Keeps stored values only when the user
+    previously saved a manual override (stored box != stored calculated snapshot).
+    """
+    figures = {}
+    for i in range(1, 10):
+        key = f'box{i}'
+        fresh = Decimal(str(calculated[key]))
+        if not vat_return:
+            figures[key] = fresh
+            continue
+        stored = vat_return.get(key)
+        stored_calc = vat_return.get(f'calculated_{key}')
+        if stored is None or stored_calc is None:
+            figures[key] = fresh
+            continue
+        if Decimal(str(stored)) != Decimal(str(stored_calc)):
+            figures[key] = Decimal(str(stored))
+        else:
+            figures[key] = fresh
+    return figures
+
+
+def _build_vat_history_entries(cycle_key: str) -> list:
+    """Submitted VAT quarters with summary figures and transaction breakdown."""
+    from lib.vat import quarter_ordinal_label, quarter_period_label
+
+    vat_settings = db.get_vat_settings()
+    entries = []
+    for rec in db.list_vat_returns(locked_only=True):
+        quarter, _, _, _, txns = _vat_quarter_context(
+            cycle_key, rec['quarter_key'], vat_settings=vat_settings
+        )
+        submitted_at = rec.get('submitted_at') or ''
+        if submitted_at and len(submitted_at) >= 10:
+            try:
+                submitted_display = datetime.strptime(
+                    submitted_at[:10], '%Y-%m-%d'
+                ).strftime('%d %b %Y')
+            except ValueError:
+                submitted_display = submitted_at[:10]
+        else:
+            submitted_display = '—'
+
+        entries.append({
+            'quarter': quarter,
+            'return': rec,
+            'ordinal': quarter_ordinal_label(quarter, cycle_key),
+            'period': quarter_period_label(quarter),
+            'submitted_display': submitted_display,
+            'output_vat': Decimal(str(rec.get('box1') or 0)),
+            'input_vat': Decimal(str(rec.get('box4') or 0)),
+            'net_owed': Decimal(str(rec.get('box5') or 0)),
+            'transactions': txns,
+        })
+    return entries
 
 
 @app.route('/office-account/import-statement', methods=['GET', 'POST'])
@@ -1410,6 +1659,7 @@ def office_import_statement():
 
         # Duplicate detection
         rows = _flag_import_duplicates(rows)
+        db.apply_vat_auto_tags(rows)
 
         # Persist staging batch
         import uuid as _uuid
@@ -1458,6 +1708,34 @@ def office_import_review():
     )
     dup_count = sum(1 for r in rows if r.get('is_duplicate'))
 
+    # Refresh auto-tag rules from lookup table (user may override in UI)
+    for row in rows:
+        if row.get('is_balance_brought_forward'):
+            row['vat_applicable'] = 0
+            row['vat_auto_tagged'] = 0
+            continue
+        rule = db.get_vat_description_rule(row.get('description'))
+        if rule is not None:
+            row['vat_applicable'] = 1 if rule else 0
+            row['vat_auto_tagged'] = 1
+        else:
+            row['vat_applicable'] = int(row.get('vat_applicable') or 0)
+            row['vat_auto_tagged'] = int(row.get('vat_auto_tagged') or 0)
+
+    vat_settings = db.get_vat_settings()
+    vat_module_active = bool(
+        vat_settings.get('activated') and vat_settings.get('quarter_cycle')
+    )
+
+    # Auto-tag lookup: {description: True/False} for template checkbox + Auto badge
+    vat_rules = {}
+    for row in rows:
+        desc = row.get('description') or ''
+        if desc and desc not in vat_rules:
+            rule = db.get_vat_description_rule(desc)
+            if rule is not None:
+                vat_rules[desc] = rule
+
     return render_template(
         'office_import_review.html',
         rows=rows,
@@ -1470,6 +1748,8 @@ def office_import_review():
         opening_balance=batch_meta.get('opening_balance') if batch_meta else None,
         closing_balance=batch_meta.get('closing_balance') if batch_meta else None,
         prev_statement_closing=batch_meta.get('ledger_balance_before') if batch_meta else None,
+        vat_module_active=vat_module_active,
+        vat_rules=vat_rules,
     )
 
 
@@ -1502,6 +1782,10 @@ def office_import_approve():
     # Collect which rows the user kept and their (possibly edited) values
     kept = []
     edit_audit_lines = []   # per-row change summary for the audit log
+    vat_settings = db.get_vat_settings()
+    vat_cycle = vat_settings.get('quarter_cycle') if vat_settings.get('activated') else None
+    from lib.vat import split_vat_gross, quarter_for_date, parse_date
+
     for row in rows:
         row_id = str(row['id'])
         if request.form.get(f'keep_{row_id}') != 'on':
@@ -1553,6 +1837,13 @@ def office_import_approve():
         else:
             row_status = 'Cleared'
 
+        # ── VAT toggle (20% split on approval) ─────────────────────────
+        vat_applicable = False
+        gross_amount = amount
+        net_amount = amount
+        vat_amount = Decimal('0')
+        vat_quarter_key = None
+
         # ── Audit diff ──────────────────────────────────────────────────
         staged_desc = (row.get('description') or '').strip()
         staged_ref  = (row.get('reference') or '').strip()
@@ -1567,6 +1858,29 @@ def office_import_approve():
             diffs.append(f"Reference edited")
         if row_status == 'Pending':
             diffs.append("Imported as Uncleared")
+        if not row.get('is_balance_brought_forward'):
+            vat_applicable = request.form.get('vat_' + str(row['id'])) == 'on'
+            if vat_applicable:
+                gross_amount, net_amount, vat_amount = split_vat_gross(amount)
+            else:
+                gross_amount = amount
+                net_amount = amount
+                vat_amount = Decimal('0')
+            if description:
+                db.upsert_vat_description_rule(
+                    description, vat_applicable, current_username()
+                )
+            txn_d = parse_date(transaction_date)
+            if txn_d and vat_cycle:
+                period_start = _vat_period_start(vat_settings)
+                vat_quarter_key = quarter_for_date(
+                    txn_d, vat_cycle, period_start_override=period_start
+                )['quarter_key']
+            if vat_applicable:
+                diffs.append(
+                    f"VAT split £{gross_amount:,.2f} gross → "
+                    f"£{net_amount:,.2f} net + £{vat_amount:,.2f} VAT"
+                )
         if diffs:
             label = description or row.get('description') or reference
             edit_audit_lines.append(f"  [{label}] {'; '.join(diffs)}")
@@ -1581,6 +1895,12 @@ def office_import_approve():
             'import_batch_id': batch_id,
             'status': row_status,
             'is_balance_brought_forward': bool(row.get('is_balance_brought_forward')),
+            'vat_applicable': vat_applicable,
+            'gross_amount': gross_amount,
+            'net_amount': net_amount,
+            'vat_amount': vat_amount,
+            'vat_quarter_key': vat_quarter_key,
+            'is_desc_amount_duplicate': bool(row.get('is_desc_amount_duplicate')),
         })
 
     if not kept:
@@ -1628,6 +1948,12 @@ def office_import_approve():
             f'{created} transaction(s) imported into Office Account successfully.',
             'success',
         )
+        if not _vat_is_active():
+            flash(
+                'VAT tags were saved. Activate the VAT module on the Office Account page '
+                'to see the VAT summary panel and quarter deadlines.',
+                'info',
+            )
     if error_msgs and not created:
         flash('No transactions were imported due to errors shown above.', 'error')
 
@@ -1674,6 +2000,280 @@ def office_import_clear_transaction(row_id):
         flash('Transaction marked as cleared. Balance has been updated.', 'success')
     except Exception as exc:
         flash(f'Error clearing transaction: {str(exc)}', 'error')
+    return redirect(url_for('office_account'))
+
+
+# ---------------------------------------------------------------------------
+# Office Account — VAT module (development)
+# ---------------------------------------------------------------------------
+
+@app.route('/office-account/vat/setup', methods=['GET', 'POST'])
+@require_admin
+def vat_setup():
+    """One-time VAT quarter cycle selection."""
+    from lib.vat import QUARTER_CYCLES
+
+    settings = db.get_vat_settings()
+    reconfigure = request.args.get('reconfigure') or request.form.get('reconfigure')
+    if settings.get('activated') and request.method == 'GET' and not reconfigure:
+        return redirect(url_for('office_account'))
+
+    if request.method == 'POST':
+        if request.form.get('action') == 'deactivate':
+            db.deactivate_vat()
+            log_audit('Office Account', 'VAT_MODULE_DEACTIVATED', details='Admin deactivated VAT')
+            flash('VAT module deactivated.', 'success')
+            return redirect(url_for('office_account'))
+
+        cycle = (request.form.get('quarter_cycle') or '').strip()
+        if cycle not in QUARTER_CYCLES:
+            flash('Please select a valid VAT quarter cycle.', 'error')
+            return redirect(url_for('vat_setup', reconfigure=reconfigure or None))
+
+        old_cycle = settings.get('quarter_cycle')
+        is_reconfigure = bool(settings.get('activated') and old_cycle)
+        if is_reconfigure and old_cycle != cycle:
+            if db.has_unsubmitted_vat_in_open_quarter(old_cycle):
+                flash(
+                    'You have unsubmitted VAT transactions in the current quarter. '
+                    'Submit or clear them before changing your VAT quarter.',
+                    'error',
+                )
+                return redirect(url_for('vat_setup', reconfigure=1))
+
+        period_start = _parse_vat_period_start_form(
+            request.form.get('period_start_override')
+        )
+        db.save_vat_setup(cycle, current_username(), period_start)
+
+        if is_reconfigure and old_cycle != cycle:
+            db.recalculate_vat_quarter_keys(cycle)
+            log_audit(
+                'Office Account', 'VAT_CYCLE_CHANGED',
+                details=f"Cycle changed from {old_cycle} to {cycle}",
+            )
+            flash('VAT quarter cycle updated. Historical transaction quarter keys recalculated.', 'success')
+        else:
+            log_audit(
+                'Office Account', 'VAT_MODULE_ACTIVATED',
+                details=f"VAT quarter cycle: {QUARTER_CYCLES[cycle]['label']}"
+                + (f"; period start {period_start}" if period_start else ''),
+            )
+            flash('VAT module activated. Quarter dates and deadlines will be calculated automatically.', 'success')
+        return redirect(url_for('office_account'))
+
+    return render_template(
+        'vat_setup.html',
+        cycles=QUARTER_CYCLES,
+        settings=settings,
+        reconfigure=bool(reconfigure),
+    )
+
+
+@app.route('/office-account/vat/deactivate', methods=['POST'])
+@require_admin
+def vat_deactivate():
+    db.deactivate_vat()
+    log_audit('Office Account', 'VAT_MODULE_DEACTIVATED', details='Admin deactivated VAT')
+    flash('VAT module deactivated.', 'success')
+    return redirect(url_for('office_account'))
+
+
+@app.route('/office-account/vat/return')
+@require_admin
+def vat_return():
+    """VAT return screen with HMRC boxes pre-filled."""
+    settings = db.get_vat_settings()
+    if not settings.get('activated'):
+        flash('Activate the VAT module before preparing a return.', 'info')
+        return redirect(url_for('vat_setup'))
+
+    cycle, bad = _require_valid_vat_cycle(settings)
+    if bad:
+        return bad
+
+    expand_key = (request.args.get('expand') or '').strip() or None
+    open_key = _open_vat_quarter_key(cycle, request.args.get('quarter') or None)
+
+    quarter, calculated, summary, vat_return, _ = _vat_quarter_context(
+        cycle, open_key, vat_settings=settings
+    )
+
+    if not vat_return or not vat_return.get('is_locked'):
+        user_figures = _vat_user_figures(vat_return, calculated)
+        db.save_vat_return_draft(quarter, calculated, user_figures, current_username())
+        vat_return = db.get_vat_return(quarter['quarter_key']) or {}
+    else:
+        user_figures = _vat_user_figures(vat_return, calculated)
+
+    from lib.vat import quarter_ordinal_label, quarter_period_label
+
+    return render_template(
+        'vat_return.html',
+        quarter=quarter,
+        quarter_ordinal=quarter_ordinal_label(quarter, cycle),
+        quarter_period=quarter_period_label(quarter),
+        calculated=calculated,
+        user_figures=user_figures,
+        summary=summary,
+        vat_return=vat_return,
+        settings=settings,
+        submitted_history=_build_vat_history_entries(cycle),
+        expand_key=expand_key,
+    )
+
+
+@app.route('/office-account/vat/return/save', methods=['POST'])
+@require_admin
+def vat_return_save():
+    settings = db.get_vat_settings()
+    if not settings.get('activated'):
+        return redirect(url_for('vat_setup'))
+
+    cycle, bad = _require_valid_vat_cycle(settings)
+    if bad:
+        return bad
+
+    quarter_key = request.form.get('quarter_key', '').strip()
+    quarter, calculated, _, vat_return, _ = _vat_quarter_context(
+        cycle, quarter_key or None, vat_settings=settings
+    )
+    if vat_return and vat_return.get('is_locked'):
+        flash('This VAT quarter is submitted and locked — no edits allowed.', 'error')
+        return redirect(url_for('vat_return', quarter=quarter_key))
+
+    final_boxes = {}
+    for i in range(1, 10):
+        key = f'box{i}'
+        try:
+            final_boxes[key] = Decimal(request.form.get(key, '0') or '0')
+        except Exception:
+            final_boxes[key] = Decimal('0')
+
+    db.save_vat_return_draft(quarter, calculated, final_boxes, current_username())
+    log_audit('Office Account', 'VAT_RETURN_DRAFT_SAVED', details=f"Quarter ending {quarter_key}")
+    flash('VAT return draft saved.', 'success')
+    return redirect(url_for('vat_return', quarter=quarter_key))
+
+
+@app.route('/office-account/vat/return/submit', methods=['POST'])
+@require_admin
+def vat_return_submit():
+    settings = db.get_vat_settings()
+    if not settings.get('activated'):
+        return redirect(url_for('vat_setup'))
+
+    cycle, bad = _require_valid_vat_cycle(settings)
+    if bad:
+        return bad
+
+    quarter_key = request.form.get('quarter_key', '').strip()
+    quarter, calculated, _, vat_return, txns = _vat_quarter_context(
+        cycle, quarter_key or None, vat_settings=settings
+    )
+    if vat_return and vat_return.get('is_locked'):
+        flash('This VAT quarter is already submitted.', 'info')
+        return redirect(url_for('vat_return', quarter=quarter_key))
+
+    unreviewed = [t for t in txns if t.get('needs_vat_re_review')]
+    if unreviewed:
+        flash(
+            f'Cannot submit VAT return: {len(unreviewed)} transaction(s) in this quarter '
+            'are unreviewed. Complete import review and VAT tagging first.',
+            'error',
+        )
+        return redirect(url_for('vat_return', quarter=quarter_key))
+
+    final_boxes = {}
+    for i in range(1, 10):
+        key = f'box{i}'
+        try:
+            final_boxes[key] = Decimal(request.form.get(key, '0') or '0')
+        except Exception:
+            final_boxes[key] = calculated[key]
+
+    hmrc_ref = (request.form.get('hmrc_reference') or '').strip()
+    db.save_vat_return_draft(quarter, calculated, final_boxes, current_username())
+    db.submit_vat_return(quarter_key, final_boxes, current_username(), hmrc_ref)
+
+    from lib.vat import current_quarter
+    period_start = _vat_period_start(settings)
+    next_q = current_quarter(cycle, period_start_override=period_start)
+    log_audit(
+        'Office Account', 'VAT_RETURN_SUBMITTED',
+        details=(
+            f"Quarter ending {quarter_key} submitted (ready for HMRC). "
+            f"Next deadline: {next_q['submission_deadline']} "
+            f"({next_q['days_until_deadline']} days)."
+        ),
+    )
+    db.log_vat_reminder(next_q['quarter_key'])
+    flash(
+        'VAT return submitted and quarter locked. '
+        'Submission is ready — HMRC API connection will be added in a later phase.',
+        'success',
+    )
+    return redirect(url_for('vat_return', expand=quarter_key))
+
+
+@app.route('/office-account/vat/transaction/<int:txn_id>/exclude', methods=['POST'])
+@require_admin
+def vat_exclude_transaction(txn_id):
+    _, bad = _require_valid_vat_cycle()
+    if bad:
+        return bad
+    reason = (request.form.get('reason') or '').strip()
+    if not reason:
+        flash('A reason is required to exclude a transaction from VAT.', 'error')
+        return redirect(url_for('office_account'))
+    try:
+        db.exclude_vat_transaction(txn_id, reason, current_username())
+        log_audit(
+            'Office Account', 'VAT_TRANSACTION_EXCLUDED',
+            record_id=str(txn_id), details=reason,
+        )
+        flash('Transaction excluded from VAT calculations. Audit trail recorded.', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'error')
+    return redirect(url_for('office_account'))
+
+
+@app.route('/office-account/vat/transaction/<int:txn_id>/edit', methods=['POST'])
+@require_admin
+def vat_edit_transaction(txn_id):
+    _, bad = _require_valid_vat_cycle()
+    if bad:
+        return bad
+    from lib.vat import split_vat_gross
+    try:
+        amount = Decimal(request.form.get('amount', '0'))
+        vat_applicable = request.form.get('vat_applicable') == 'on'
+        fields = {
+            'description': (request.form.get('description') or '').strip() or None,
+            'reference': (request.form.get('reference') or '').strip(),
+            'amount': str(amount),
+            'vat_applicable': 1 if vat_applicable else 0,
+        }
+        if vat_applicable:
+            gross, net, vat = split_vat_gross(amount)
+            fields['gross_amount'] = str(gross)
+            fields['net_amount'] = str(net)
+            fields['vat_amount'] = str(vat)
+        else:
+            fields['gross_amount'] = str(amount)
+            fields['net_amount'] = str(amount)
+            fields['vat_amount'] = '0'
+        db.update_vat_transaction_fields(txn_id, fields, current_username())
+        log_audit(
+            'Office Account', 'VAT_TRANSACTION_EDITED',
+            record_id=str(txn_id),
+            details='Post-approval edit — flagged for re-review',
+        )
+        flash('Transaction updated and flagged for VAT re-review.', 'warning')
+    except ValueError as exc:
+        flash(str(exc), 'error')
+    except Exception as exc:
+        flash(f'Error updating transaction: {exc}', 'error')
     return redirect(url_for('office_account'))
 
 

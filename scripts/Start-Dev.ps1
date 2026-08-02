@@ -27,6 +27,7 @@ if ($env:NEXAL_PRODUCTION -match '^(1|true|yes)$') {
 
 # Set development environment variables
 $env:NEXAL_DEV = "1"
+$env:FLASK_DEBUG = "1"
 # Unset production flag to be absolutely safe
 Remove-Item Env:\NEXAL_PRODUCTION -ErrorAction SilentlyContinue
 

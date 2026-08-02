@@ -525,6 +525,64 @@ class Database:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_osh_batch "
             "ON office_statement_history(batch_id)"
         )
+
+        # ── VAT module ───────────────────────────────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vat_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                activated INTEGER NOT NULL DEFAULT 0,
+                quarter_cycle TEXT,
+                setup_at TIMESTAMP,
+                setup_by TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vat_description_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                description_normalized TEXT NOT NULL UNIQUE,
+                vat_applicable INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_vat_desc_rules
+            ON vat_description_rules(description_normalized)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vat_returns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quarter_key TEXT NOT NULL UNIQUE,
+                quarter_start TEXT NOT NULL,
+                quarter_end TEXT NOT NULL,
+                submission_deadline TEXT NOT NULL,
+                calculated_box1 TEXT, calculated_box2 TEXT, calculated_box3 TEXT,
+                calculated_box4 TEXT, calculated_box5 TEXT, calculated_box6 TEXT,
+                calculated_box7 TEXT, calculated_box8 TEXT, calculated_box9 TEXT,
+                box1 TEXT, box2 TEXT, box3 TEXT, box4 TEXT, box5 TEXT,
+                box6 TEXT, box7 TEXT, box8 TEXT, box9 TEXT,
+                submitted_at TIMESTAMP,
+                submitted_by TEXT,
+                hmrc_reference TEXT,
+                is_locked INTEGER NOT NULL DEFAULT 0,
+                reminder_logged INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self._ensure_column(cursor, 'office_import_staging', 'vat_applicable', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'office_import_staging', 'vat_auto_tagged', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'office_import_staging', 'is_desc_amount_duplicate', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'office_cashbook', 'vat_applicable', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'office_cashbook', 'gross_amount', "TEXT")
+        self._ensure_column(cursor, 'office_cashbook', 'net_amount', "TEXT")
+        self._ensure_column(cursor, 'office_cashbook', 'vat_amount', "TEXT")
+        self._ensure_column(cursor, 'office_cashbook', 'is_vat_excluded', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'office_cashbook', 'vat_exclusion_reason', "TEXT")
+        self._ensure_column(cursor, 'office_cashbook', 'needs_vat_re_review', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'office_cashbook', 'vat_quarter_key', "TEXT")
+        self._ensure_column(cursor, 'office_cashbook', 'is_desc_amount_duplicate', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'vat_settings', 'period_start_override', "TEXT")
+
         conn.commit()
         if not self.skip_user_seed:
             self._seed_default_users(cursor)
@@ -2930,8 +2988,9 @@ class Database:
                      transaction_date, description, reference, amount, transaction_type,
                      source, is_duplicate, created_by,
                      opening_balance, closing_balance, ledger_balance_before, balance_match,
-                     is_balance_brought_forward)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     is_balance_brought_forward, vat_applicable, vat_auto_tagged,
+                     is_desc_amount_duplicate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -2952,6 +3011,9 @@ class Database:
                         lb_str,
                         balance_match,
                         1 if row.get('is_balance_brought_forward') else 0,
+                        1 if row.get('vat_applicable') else 0,
+                        1 if row.get('vat_auto_tagged') else 0,
+                        1 if row.get('is_desc_amount_duplicate') else 0,
                     ),
                 )
             conn.commit()
@@ -3211,12 +3273,20 @@ class Database:
                         """
                         INSERT INTO office_cashbook
                         (transaction_id, transaction_date, amount, transaction_type,
-                         reference, source, description, status, created_by, import_batch_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         reference, source, description, status, created_by, import_batch_id,
+                         vat_applicable, gross_amount, net_amount, vat_amount, vat_quarter_key,
+                         is_desc_amount_duplicate)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (txn_id, row['transaction_date'], str(row['amount']),
                          row['transaction_type'], row['reference'], source,
-                         row.get('description'), status, approved_by, batch_id),
+                         row.get('description'), status, approved_by, batch_id,
+                         1 if row.get('vat_applicable') else 0,
+                         str(row.get('gross_amount') or row['amount']),
+                         str(row.get('net_amount') or row['amount']),
+                         str(row.get('vat_amount') or '0'),
+                         row.get('vat_quarter_key'),
+                         1 if row.get('is_desc_amount_duplicate') else 0),
                     )
                     row_id = cursor.lastrowid
                     if source == 'Cheque' and status == 'Pending':
@@ -4235,6 +4305,14 @@ class Database:
                 'office_cashbook_id': oc['id'],
                 'import_batch_id': oc.get('import_batch_id'),
                 'created_by': oc.get('created_by', 'System'),
+                'vat_applicable': oc.get('vat_applicable'),
+                'gross_amount': oc.get('gross_amount'),
+                'net_amount': oc.get('net_amount'),
+                'vat_amount': oc.get('vat_amount'),
+                'is_vat_excluded': oc.get('is_vat_excluded'),
+                'vat_exclusion_reason': oc.get('vat_exclusion_reason'),
+                'needs_vat_re_review': oc.get('needs_vat_re_review'),
+                'is_desc_amount_duplicate': oc.get('is_desc_amount_duplicate'),
             })
 
         # Legacy unlinked cashbook (kept for backward compatibility)
@@ -4594,3 +4672,412 @@ class Database:
         """, (key, str(value), description))
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # VAT module
+    # ------------------------------------------------------------------
+
+    def get_vat_settings(self) -> dict:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM vat_settings WHERE id = 1")
+            row = cursor.fetchone()
+            if not row:
+                return {'activated': 0, 'quarter_cycle': None, 'period_start_override': None}
+            return dict(row)
+        finally:
+            conn.close()
+
+    def save_vat_setup(
+        self,
+        quarter_cycle: str,
+        setup_by: str,
+        period_start_override: str | None = None,
+    ) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO vat_settings (id, activated, quarter_cycle, setup_at, setup_by,
+                                          period_start_override)
+                VALUES (1, 1, ?, CURRENT_TIMESTAMP, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    activated = 1,
+                    quarter_cycle = excluded.quarter_cycle,
+                    setup_at = CURRENT_TIMESTAMP,
+                    setup_by = excluded.setup_by,
+                    period_start_override = excluded.period_start_override
+                """,
+                (quarter_cycle, setup_by, period_start_override),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def deactivate_vat(self) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE vat_settings
+                SET activated = 0,
+                    quarter_cycle = NULL,
+                    period_start_override = NULL
+                WHERE id = 1
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def has_unsubmitted_vat_in_open_quarter(self, cycle_key: str) -> bool:
+        """True if current quarter has VAT transactions and return is not submitted."""
+        from lib.vat import current_quarter, parse_date, transaction_on_or_after_period_start
+
+        settings = self.get_vat_settings()
+        period_start = parse_date(settings.get('period_start_override'))
+        quarter = current_quarter(cycle_key, period_start_override=period_start)
+        vat_return = self.get_vat_return(quarter['quarter_key'])
+        if vat_return and vat_return.get('is_locked'):
+            return False
+
+        txns = self.get_office_cashbook_for_vat_quarter(
+            quarter['quarter_start'], quarter['quarter_end']
+        )
+        for txn in txns:
+            if not transaction_on_or_after_period_start(
+                txn.get('transaction_date'), period_start
+            ):
+                continue
+            if (
+                txn.get('vat_applicable')
+                and not txn.get('is_vat_excluded')
+                and not txn.get('is_deleted')
+                and (txn.get('status') or 'Cleared') == 'Cleared'
+            ):
+                return True
+        return False
+
+    def recalculate_vat_quarter_keys(self, cycle_key: str) -> int:
+        """Recompute vat_quarter_key on all cashbook rows for a new cycle."""
+        from lib.vat import quarter_for_date, parse_date
+
+        settings = self.get_vat_settings()
+        period_start = parse_date(settings.get('period_start_override'))
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, transaction_date FROM office_cashbook
+                WHERE COALESCE(is_deleted, 0) = 0
+                """
+            )
+            updated = 0
+            for row in cursor.fetchall():
+                d = parse_date(row['transaction_date'])
+                if not d:
+                    continue
+                q = quarter_for_date(d, cycle_key, period_start_override=period_start)
+                cursor.execute(
+                    "UPDATE office_cashbook SET vat_quarter_key = ? WHERE id = ?",
+                    (q['quarter_key'], row['id']),
+                )
+                updated += 1
+            conn.commit()
+            return updated
+        finally:
+            conn.close()
+
+    def get_vat_description_rule(self, description: str) -> Optional[bool]:
+        from lib.vat import normalize_description
+        key = normalize_description(description)
+        if not key:
+            return None
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT vat_applicable FROM vat_description_rules WHERE description_normalized = ?",
+                (key,),
+            )
+            row = cursor.fetchone()
+            return bool(row['vat_applicable']) if row else None
+        finally:
+            conn.close()
+
+    def upsert_vat_description_rule(self, description: str, vat_applicable: bool, updated_by: str) -> None:
+        from lib.vat import normalize_description
+        key = normalize_description(description)
+        if not key:
+            return
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO vat_description_rules
+                (description_normalized, vat_applicable, updated_at, updated_by)
+                VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+                ON CONFLICT(description_normalized) DO UPDATE SET
+                    vat_applicable = excluded.vat_applicable,
+                    updated_at = CURRENT_TIMESTAMP,
+                    updated_by = excluded.updated_by
+                """,
+                (key, 1 if vat_applicable else 0, updated_by),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def apply_vat_auto_tags(self, rows: list) -> list:
+        """Apply saved description rules to import rows (mutates rows in place)."""
+        for row in rows:
+            if row.get('is_balance_brought_forward'):
+                row['vat_applicable'] = False
+                row['vat_auto_tagged'] = False
+                continue
+            rule = self.get_vat_description_rule(row.get('description'))
+            if rule is not None:
+                row['vat_applicable'] = rule
+                row['vat_auto_tagged'] = True
+            else:
+                row.setdefault('vat_applicable', False)
+                row.setdefault('vat_auto_tagged', False)
+        return rows
+
+    def get_office_cashbook_for_vat_quarter(
+        self, quarter_start: str, quarter_end: str
+    ) -> List[Dict]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM office_cashbook
+                WHERE COALESCE(is_deleted, 0) = 0
+                  AND transaction_date >= ?
+                  AND transaction_date <= ?
+                ORDER BY transaction_date, id
+                """,
+                (quarter_start, quarter_end),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_vat_return(self, quarter_key: str) -> Optional[dict]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM vat_returns WHERE quarter_key = ?", (quarter_key,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def list_vat_returns(self, locked_only: bool = False) -> List[Dict]:
+        """Return VAT return records ordered by quarter end descending."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            sql = "SELECT * FROM vat_returns"
+            if locked_only:
+                sql += " WHERE is_locked = 1"
+            sql += " ORDER BY quarter_end DESC, quarter_key DESC"
+            cursor.execute(sql)
+            return [dict(r) for r in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def save_vat_return_draft(
+        self,
+        quarter: dict,
+        calculated: dict,
+        final_boxes: dict,
+        username: str,
+    ) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO vat_returns (
+                    quarter_key, quarter_start, quarter_end, submission_deadline,
+                    calculated_box1, calculated_box2, calculated_box3,
+                    calculated_box4, calculated_box5, calculated_box6,
+                    calculated_box7, calculated_box8, calculated_box9,
+                    box1, box2, box3, box4, box5, box6, box7, box8, box9
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(quarter_key) DO UPDATE SET
+                    calculated_box1 = excluded.calculated_box1,
+                    calculated_box2 = excluded.calculated_box2,
+                    calculated_box3 = excluded.calculated_box3,
+                    calculated_box4 = excluded.calculated_box4,
+                    calculated_box5 = excluded.calculated_box5,
+                    calculated_box6 = excluded.calculated_box6,
+                    calculated_box7 = excluded.calculated_box7,
+                    calculated_box8 = excluded.calculated_box8,
+                    calculated_box9 = excluded.calculated_box9,
+                    box1 = excluded.box1,
+                    box2 = excluded.box2,
+                    box3 = excluded.box3,
+                    box4 = excluded.box4,
+                    box5 = excluded.box5,
+                    box6 = excluded.box6,
+                    box7 = excluded.box7,
+                    box8 = excluded.box8,
+                    box9 = excluded.box9
+                WHERE is_locked = 0
+                """,
+                (
+                    quarter['quarter_key'],
+                    quarter['quarter_start'],
+                    quarter['quarter_end'],
+                    quarter['submission_deadline'],
+                    str(calculated['box1']), str(calculated['box2']), str(calculated['box3']),
+                    str(calculated['box4']), str(calculated['box5']), str(calculated['box6']),
+                    str(calculated['box7']), str(calculated['box8']), str(calculated['box9']),
+                    str(final_boxes['box1']), str(final_boxes['box2']), str(final_boxes['box3']),
+                    str(final_boxes['box4']), str(final_boxes['box5']), str(final_boxes['box6']),
+                    str(final_boxes['box7']), str(final_boxes['box8']), str(final_boxes['box9']),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def submit_vat_return(
+        self, quarter_key: str, final_boxes: dict, submitted_by: str, hmrc_reference: str = ''
+    ) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            existing = self.get_vat_return(quarter_key)
+            if existing and existing.get('is_locked'):
+                raise ValueError('This VAT quarter is already submitted and locked.')
+            cursor.execute(
+                """
+                INSERT INTO vat_returns (
+                    quarter_key, quarter_start, quarter_end, submission_deadline,
+                    box1, box2, box3, box4, box5, box6, box7, box8, box9,
+                    submitted_at, submitted_by, hmrc_reference, is_locked
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, 1)
+                ON CONFLICT(quarter_key) DO UPDATE SET
+                    box1 = excluded.box1, box2 = excluded.box2, box3 = excluded.box3,
+                    box4 = excluded.box4, box5 = excluded.box5, box6 = excluded.box6,
+                    box7 = excluded.box7, box8 = excluded.box8, box9 = excluded.box9,
+                    submitted_at = CURRENT_TIMESTAMP,
+                    submitted_by = excluded.submitted_by,
+                    hmrc_reference = excluded.hmrc_reference,
+                    is_locked = 1
+                """,
+                (
+                    quarter_key,
+                    existing.get('quarter_start') if existing else '',
+                    existing.get('quarter_end') if existing else quarter_key,
+                    existing.get('submission_deadline') if existing else '',
+                    str(final_boxes['box1']), str(final_boxes['box2']), str(final_boxes['box3']),
+                    str(final_boxes['box4']), str(final_boxes['box5']), str(final_boxes['box6']),
+                    str(final_boxes['box7']), str(final_boxes['box8']), str(final_boxes['box9']),
+                    submitted_by,
+                    hmrc_reference or '',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def exclude_vat_transaction(
+        self, office_cashbook_id: int, reason: str, username: str
+    ) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM office_cashbook WHERE id = ?", (office_cashbook_id,))
+            old = cursor.fetchone()
+            if not old:
+                raise ValueError('Transaction not found.')
+            old = dict(old)
+            if old.get('is_vat_excluded'):
+                raise ValueError('Transaction is already excluded from VAT.')
+            cursor.execute(
+                """
+                UPDATE office_cashbook
+                SET is_vat_excluded = 1,
+                    vat_exclusion_reason = ?
+                WHERE id = ?
+                """,
+                (reason.strip()[:500], office_cashbook_id),
+            )
+            conn.commit()
+            self._log_audit(
+                'office_cashbook', office_cashbook_id, 'UPDATE', old,
+                {'is_vat_excluded': 1, 'vat_exclusion_reason': reason.strip()[:500]},
+                reason=f'VAT exclusion by {username}',
+            )
+        finally:
+            conn.close()
+
+    def update_vat_transaction_fields(
+        self,
+        office_cashbook_id: int,
+        fields: dict,
+        username: str,
+        reason: str = 'Post-approval VAT edit',
+    ) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM office_cashbook WHERE id = ?", (office_cashbook_id,))
+            old = cursor.fetchone()
+            if not old:
+                raise ValueError('Transaction not found.')
+            old = dict(old)
+            vat_return = None
+            if old.get('vat_quarter_key'):
+                vat_return = self.get_vat_return(old['vat_quarter_key'])
+            if vat_return and vat_return.get('is_locked'):
+                raise ValueError('Cannot edit — VAT quarter is submitted and locked.')
+
+            sets = []
+            params = []
+            allowed = (
+                'description', 'reference', 'amount', 'vat_applicable',
+                'gross_amount', 'net_amount', 'vat_amount',
+            )
+            new_vals = {}
+            for key in allowed:
+                if key in fields:
+                    sets.append(f"{key} = ?")
+                    params.append(fields[key])
+                    new_vals[key] = fields[key]
+            sets.append("needs_vat_re_review = 1")
+            new_vals['needs_vat_re_review'] = 1
+            params.append(office_cashbook_id)
+            cursor.execute(
+                f"UPDATE office_cashbook SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            self._log_audit(
+                'office_cashbook', office_cashbook_id, 'UPDATE', old, new_vals,
+                reason=f'{reason} by {username}',
+            )
+        finally:
+            conn.close()
+
+    def log_vat_reminder(self, quarter_key: str) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE vat_returns SET reminder_logged = 1 WHERE quarter_key = ?",
+                (quarter_key,),
+            )
+            conn.commit()
+        finally:
+            conn.close()

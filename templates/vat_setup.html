@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block page_title %}VAT Module Setup{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width: 640px; margin: 0 auto;">
+    <h2>{% if reconfigure %}Reconfigure{% else %}Activate{% endif %} VAT Module</h2>
+    <p style="color: var(--text-secondary); margin: 12px 0 24px;">
+        Select your firm's VAT quarter end months. This is a one-time setup — the system
+        will calculate all future quarter end dates and HMRC submission deadlines automatically.
+        VAT rate is fixed at <strong>20%</strong>.
+    </p>
+
+    <form method="POST">
+        {% if reconfigure %}
+        <input type="hidden" name="reconfigure" value="1">
+        {% endif %}
+
+        <div class="form-group">
+            <label style="font-weight: 600; margin-bottom: 12px; display: block;">VAT quarter end months</label>
+            {% for key, cycle in cycles.items() %}
+            <label style="display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px;
+                          border: 1px solid var(--border-subtle); border-radius: 8px;
+                          margin-bottom: 10px; cursor: pointer; background: var(--bg-elevated);">
+                <input type="radio" name="quarter_cycle" value="{{ key }}" required
+                       {% if settings.quarter_cycle == key %}checked{% endif %}
+                       style="margin-top: 3px;">
+                <span>
+                    <strong>{{ cycle.label }}</strong>
+                    <br><small style="color: var(--text-muted);">
+                        Quarters end on the last day of each listed month.
+                    </small>
+                </span>
+            </label>
+            {% endfor %}
+        </div>
+
+        <div class="form-group" style="margin-top: 20px;">
+            <label for="period_start_override" style="font-weight: 600;">
+                When did your current VAT period start?
+            </label>
+            <p style="font-size: 13px; color: var(--text-muted); margin: 6px 0 10px;">
+                Leave blank to use today's date. Use this if you joined mid-quarter — e.g. your
+                HMRC quarter started 1 October but you are setting up Nexal in November.
+            </p>
+            <input type="date" id="period_start_override" name="period_start_override"
+                   value="{{ settings.period_start_override or '' }}"
+                   style="max-width: 220px;">
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;">
+            <button type="submit" class="btn btn-primary">
+                {% if reconfigure %}Save VAT Settings{% else %}Activate VAT Module{% endif %}
+            </button>
+            <a href="{{ url_for('office_account') }}" class="btn btn-secondary">Cancel</a>
+            {% if reconfigure and settings.activated %}
+            <button type="submit" name="action" value="deactivate" class="btn btn-secondary"
+                    onclick="return confirm('Deactivate the VAT module? Quarter settings will be cleared.');">
+                Deactivate VAT
+            </button>
+            {% endif %}
+        </div>
+    </form>
+</div>
+{% endblock %}
