@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 MIN_SECRET_LEN = 16
 
@@ -37,11 +38,11 @@ def write_env_file(env_file: Path, values: dict[str, str]) -> None:
     os.chmod(env_file, 0o600)
 
 
-def is_valid_secret(value: str | None, *, min_len: int = MIN_SECRET_LEN) -> bool:
+def is_valid_secret(value: Optional[str], *, min_len: int = MIN_SECRET_LEN) -> bool:
     return bool(value and len(value) >= min_len)
 
 
-def is_usable_flask_secret(value: str | None, dev_flask_secret: str) -> bool:
+def is_usable_flask_secret(value: Optional[str], dev_flask_secret: str) -> bool:
     return is_valid_secret(value) and value != dev_flask_secret
 
 

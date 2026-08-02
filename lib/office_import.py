@@ -18,9 +18,9 @@ Each returned row dict:
 
 parse_office_statement() returns a ParseResult named-tuple:
     rows             list of transaction dicts (balance-marker rows excluded)
-    opening_balance  Decimal | None  (from CSV opening-balance row or first balance col)
-    closing_balance  Decimal | None  (from CSV closing-balance row or last balance col)
-    error            str | None
+    opening_balance  Optional[Decimal]  (from CSV opening-balance row or first balance col)
+    closing_balance  Optional[Decimal]  (from CSV closing-balance row or last balance col)
+    error            Optional[str]
 """
 
 import csv

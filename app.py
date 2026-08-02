@@ -1377,13 +1377,13 @@ def _vat_is_active() -> bool:
     )
 
 
-def _vat_period_start(settings: dict | None = None):
+def _vat_period_start(settings: Optional[Dict] = None):
     from lib.vat import parse_date
     settings = settings or db.get_vat_settings()
     return parse_date(settings.get('period_start_override'))
 
 
-def _require_valid_vat_cycle(settings: dict | None = None):
+def _require_valid_vat_cycle(settings: Optional[Dict] = None):
     """Return (cycle_key, None) or (None, redirect_response) if settings corrupt."""
     from lib.vat import VALID_CYCLES
     settings = settings or db.get_vat_settings()
@@ -1407,7 +1407,7 @@ def _filter_vat_scope_txns(txns: list, period_start) -> list:
     ]
 
 
-def _parse_vat_period_start_form(raw: str | None) -> str | None:
+def _parse_vat_period_start_form(raw: Optional[str]) -> Optional[str]:
     """Parse optional period start from setup form (YYYY-MM-DD)."""
     raw = (raw or '').strip()
     if not raw:
@@ -1519,7 +1519,7 @@ def _open_vat_quarter_key(cycle_key: str, requested_key: str = None) -> str:
     return current_quarter(cycle_key, period_start_override=period_start)['quarter_key']
 
 
-def _vat_user_figures(vat_return: dict | None, calculated: dict) -> dict:
+def _vat_user_figures(vat_return: Optional[Dict], calculated: Dict) -> Dict:
     """
     Your-figure box values for an open VAT return.
 

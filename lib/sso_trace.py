@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +17,11 @@ TRACE_EMAILS = frozenset(
 )
 
 
-def should_trace(email: str | None) -> bool:
+def should_trace(email: Optional[str]) -> bool:
     return bool(email and email.strip().lower() in TRACE_EMAILS)
 
 
-def sso_stage(email: str | None, stage: str, fn: Callable[[], T]) -> T:
+def sso_stage(email: Optional[str], stage: str, fn: Callable[[], T]) -> T:
     """Run an SSO step; log stage boundaries for traced accounts."""
     if should_trace(email):
         logger.warning("SSO_TRACE email=%s stage=%s status=start", email, stage)
@@ -47,7 +47,7 @@ def sso_stage(email: str | None, stage: str, fn: Callable[[], T]) -> T:
     return result
 
 
-def log_sso_detail(email: str | None, stage: str, **fields: Any) -> None:
+def log_sso_detail(email: Optional[str], stage: str, **fields: Any) -> None:
     if should_trace(email):
         logger.warning(
             "SSO_TRACE email=%s stage=%s %s",
