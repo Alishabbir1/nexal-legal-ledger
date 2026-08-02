@@ -4693,7 +4693,7 @@ class Database:
         self,
         quarter_cycle: str,
         setup_by: str,
-        period_start_override: str | None = None,
+        period_start_override: Optional[str] = None,
     ) -> None:
         conn = self.get_connection()
         try:

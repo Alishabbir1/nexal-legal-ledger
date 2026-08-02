@@ -31,7 +31,7 @@ QUARTER_CYCLES = {
 VALID_CYCLES = tuple(QUARTER_CYCLES.keys())
 
 
-def normalize_description(description: str | None) -> str:
+def normalize_description(description: Optional[str]) -> str:
     """Normalize description for auto-tag lookup."""
     return (description or '').strip().lower()
 
@@ -68,7 +68,7 @@ def submission_deadline(quarter_end: date) -> date:
 
 def _apply_period_start_override(
     quarter: dict[str, Any],
-    period_start_override: date | None,
+    period_start_override: Optional[date],
 ) -> dict[str, Any]:
     """Adjust quarter start when firm joined mid-period."""
     if not period_start_override:
@@ -90,8 +90,8 @@ def _apply_period_start_override(
 
 
 def transaction_on_or_after_period_start(
-    txn_date: str | None,
-    period_start_override: date | None,
+    txn_date: Optional[str],
+    period_start_override: Optional[date],
 ) -> bool:
     """False when transaction predates the firm's configured VAT period start."""
     if not period_start_override:
@@ -103,7 +103,7 @@ def transaction_on_or_after_period_start(
 def quarter_for_date(
     d: date,
     cycle_key: str,
-    period_start_override: date | None = None,
+    period_start_override: Optional[date] = None,
 ) -> dict[str, Any]:
     """Return quarter metadata for a date within the firm's VAT cycle."""
     if cycle_key not in QUARTER_CYCLES:
@@ -157,15 +157,15 @@ def _pack_quarter(q_start: date, q_end: date, cycle_key: str) -> dict[str, Any]:
 
 def current_quarter(
     cycle_key: str,
-    as_of: date | None = None,
-    period_start_override: date | None = None,
+    as_of: Optional[date] = None,
+    period_start_override: Optional[date] = None,
 ) -> dict[str, Any]:
     return quarter_for_date(
         as_of or date.today(), cycle_key, period_start_override
     )
 
 
-def parse_date(value: str | None) -> Optional[date]:
+def parse_date(value: Optional[str]) -> Optional[date]:
     if not value:
         return None
     try:
