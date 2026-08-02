@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Auto-run after git pull on the VPS (enable once: git config core.hooksPath .githooks)
+# Fixes stale systemd WorkingDirectory drop-ins that point at /opt/nexal-legal or /root/.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+DROPIN="/etc/systemd/system/nexal-ledger.service.d/working-directory.conf"
+
+if [[ "${ROOT}" == "/opt/nexal-ledger" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+  mkdir -p "$(dirname "${DROPIN}")"
+  cp "${ROOT}/deploy/systemd/nexal-ledger.service.d/working-directory.conf" "${DROPIN}"
+  systemctl daemon-reload
+fi

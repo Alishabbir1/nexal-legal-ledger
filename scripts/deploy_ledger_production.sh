@@ -5,14 +5,14 @@
 #   curl -sI https://ledger.nexallegal.co.uk/ | head -3
 #
 # Canonical production layout:
-#   APP_DIR:  /opt/nexal-legal-ledger   (sync user reads here — NOT /root/)
+#   APP_DIR:  /opt/nexal-ledger   (User=nexal reads here — NOT /root/)
 #   DATA_DIR: /var/lib/nexal-legal
 #   SERVICE:  nexal-ledger
 #   USER:     sync
 set -euo pipefail
 
 SERVICE="${SERVICE:-nexal-ledger}"
-APP_DIR="${APP_DIR:-/opt/nexal-legal-ledger}"
+APP_DIR="${APP_DIR:-/opt/nexal-ledger}"
 DATA_DIR="${NEXAL_DATA_DIR:-/var/lib/nexal-legal}"
 GITHUB_REPO="${NEXAL_GITHUB_REPO:-https://github.com/Alishabbir1/nexal-legal-ledger.git}"
 DROPIN_DIR="/etc/systemd/system/${SERVICE}.service.d"

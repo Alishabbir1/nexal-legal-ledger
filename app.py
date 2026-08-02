@@ -16,6 +16,17 @@ import csv
 import logging
 from typing import Tuple, Optional, Dict
 
+# Production hardening: gunicorn must run with cwd = repo root (templates/, lib/, static/).
+# A stale systemd WorkingDirectory drop-in (e.g. /opt/nexal-legal) breaks imports and templates.
+_APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _APP_ROOT not in sys.path:
+    sys.path.insert(0, _APP_ROOT)
+try:
+    if not os.path.isfile(os.path.join(os.getcwd(), "app.py")):
+        os.chdir(_APP_ROOT)
+except OSError:
+    pass
+
 from lib.portal_auth import (
     get_portal_dashboard_url,
     get_portal_login_url,
