@@ -1337,6 +1337,52 @@ def update_office_cashbook_status(transaction_id):
     return redirect(url_for('office_account'))
 
 
+@app.route('/office-account/reverse/<int:office_cashbook_id>', methods=['POST'])
+@require_admin
+def reverse_office_transaction(office_cashbook_id):
+    """Reverse an office cashbook transaction (admin only)."""
+    reason = (request.form.get('reversal_reason') or '').strip()
+    if len(reason) < 5:
+        flash('Reversal reason is mandatory (minimum 5 characters).', 'error')
+        return redirect(url_for('office_account'))
+
+    try:
+        result = db.reverse_office_cashbook_transaction(
+            office_cashbook_id, current_username(), reason
+        )
+        log_audit(
+            'Office Account',
+            'OFFICE_TRANSACTION_REVERSED',
+            record_id=str(office_cashbook_id),
+            details=(
+                f"Reversed by {current_username()} | original #{office_cashbook_id} "
+                f"{result['original_type']} £{result['amount']} -> "
+                f"reversal #{result['reversal_id']} ({result['reversal_transaction_id']}) | "
+                f"Reason: {reason}{result.get('vat_impact') or ''}"
+            ),
+        )
+        flash(
+            f"Transaction reversed. Reversal ID: {result['reversal_transaction_id']}",
+            'success',
+        )
+    except ValueError as e:
+        flash(str(e), 'error')
+    except Exception as e:
+        logger.exception('Office reversal failed')
+        flash(f'Unable to reverse transaction: {e}', 'error')
+
+    return redirect(url_for('office_account'))
+
+
+def _office_reversal_report_fields(trans: dict) -> tuple:
+    """Reversal status and reason columns for office report exports."""
+    if trans.get('is_reversal_entry') or trans.get('reversal_of'):
+        return 'Reversal', trans.get('description') or ''
+    if (trans.get('reversal_status') or 'ACTIVE') == 'REVERSED':
+        return 'Reversed', trans.get('reversal_reason') or ''
+    return 'Active', ''
+
+
 # ---------------------------------------------------------------------------
 # Office Account — Bank Statement Import (Phase 1: CSV)
 # All four routes write only to office_import_staging or office_cashbook.
@@ -3235,6 +3281,30 @@ def export_compliance_pack():
                 '"' + str(e.get('details', '')).replace('"', '""') + '"'
             ]))
         zf.writestr('audit_log.csv', '\n'.join(lines))
+        oc_lines = [
+            'Transaction ID,Date,Type,Reference,Source,Status,Amount,Reversal Status,Reversal Reason,Reversal Of ID'
+        ]
+        for oc in db._get_office_cashbook_rows():
+            rev_status, rev_reason = _office_reversal_report_fields({
+                'reversal_status': oc.get('reversal_status'),
+                'reversal_reason': oc.get('reversal_reason'),
+                'reversal_of': oc.get('reversal_of'),
+                'is_reversal_entry': oc.get('reversal_of') is not None,
+                'description': oc.get('description'),
+            })
+            oc_lines.append(','.join([
+                str(oc.get('transaction_id', '')),
+                str(oc.get('transaction_date', '')),
+                str(oc.get('transaction_type', '')),
+                '"' + str(oc.get('reference', '')).replace('"', '""') + '"',
+                str(oc.get('source', '')),
+                str(oc.get('status', '')),
+                str(oc.get('amount', '')),
+                rev_status,
+                '"' + str(rev_reason).replace('"', '""') + '"',
+                str(oc.get('reversal_of') or ''),
+            ]))
+        zf.writestr('office_cashbook_report.csv', '\n'.join(oc_lines))
         recs = db.get_most_recent_reconciliation_date()
         zf.writestr('reconciliation_summary.txt', f"Last reconciliation: {recs or 'None'}\n")
         trans = db.get_all_cashbook_transactions()
@@ -3958,21 +4028,22 @@ def _build_office_income_pdf(transactions, date_from, date_to, total):
     for t in chronological:
         amt = Decimal(str(t['amount']))
         running += amt
+        rev_status, rev_reason = _office_reversal_report_fields(t)
         if t.get('transaction_type') == 'Fee Transfer':
             client = f"{t.get('client_code', '')} - {t.get('client_name', '')}" if t.get('client_code') else '-'
             typ = 'Fee Transfer'
         else:
             client = '-'
             typ = t.get('transaction_type') or 'Receipt'
-        rows.append([str(t['transaction_date']), typ, str(t.get('reference') or '-'), client, f"£{amt:,.2f}", f"£{running:,.2f}", str(t.get('created_by', 'System'))])
-    rows.append(['', '', '', 'Opening:', '£0.00', '£0.00', ''])
-    rows.append(['', '', '', 'Closing:', f"£{total:,.2f}", f"£{total:,.2f}", ''])
+        rows.append([str(t['transaction_date']), typ, str(t.get('reference') or '-'), client, f"£{amt:,.2f}", f"£{running:,.2f}", str(t.get('created_by', 'System')), rev_status, rev_reason])
+    rows.append(['', '', '', 'Opening:', '£0.00', '£0.00', '', '', ''])
+    rows.append(['', '', '', 'Closing:', f"£{total:,.2f}", f"£{total:,.2f}", '', '', ''])
     return build_pdf_report(
         "Office Income Summary",
         f"Date Range: {date_range}",
-        ['Date', 'Type', 'Reference', 'Client', 'Amount', 'Running Balance', 'Created By'],
+        ['Date', 'Type', 'Reference', 'Client', 'Amount', 'Running Balance', 'Created By', 'Reversal Status', 'Reversal Reason'],
         rows,
-        [70, 80, 180, 200, 80, 90, 60],
+        [70, 80, 180, 200, 80, 90, 60, 70, 120],
         currency_cols=[4, 5],
     )
 
@@ -3986,6 +4057,7 @@ def _build_office_expenses_pdf(transactions, date_from, date_to, total):
     for t in chronological:
         amt = Decimal(str(t['amount']))
         running -= amt
+        rev_status, rev_reason = _office_reversal_report_fields(t)
         rows.append([
             str(t['transaction_date']),
             str(t.get('reference') or '-'),
@@ -3994,15 +4066,17 @@ def _build_office_expenses_pdf(transactions, date_from, date_to, total):
             f"£{amt:,.2f}",
             f"£{running:,.2f}",
             str(t.get('created_by', 'System')),
+            rev_status,
+            rev_reason,
         ])
-    rows.append(['', '', '', 'Opening:', '£0.00', '£0.00', ''])
-    rows.append(['', '', '', 'Closing:', f"-£{total:,.2f}", f"-£{total:,.2f}", ''])
+    rows.append(['', '', '', 'Opening:', '£0.00', '£0.00', '', '', ''])
+    rows.append(['', '', '', 'Closing:', f"-£{total:,.2f}", f"-£{total:,.2f}", '', '', ''])
     return build_pdf_report(
         "Office Expenses Summary",
         f"Date Range: {date_range}",
-        ['Date', 'Reference', 'Source', 'Description', 'Amount', 'Running Balance', 'Created By'],
+        ['Date', 'Reference', 'Source', 'Description', 'Amount', 'Running Balance', 'Created By', 'Reversal Status', 'Reversal Reason'],
         rows,
-        [70, 130, 80, 250, 80, 90, 60],
+        [70, 130, 80, 250, 80, 90, 60, 70, 120],
         currency_cols=[4, 5],
     )
 
@@ -4063,10 +4137,11 @@ def export_office_income_csv():
     income_rows = [t for t in transactions if t.get('transaction_type') in ('Receipt', 'Fee Transfer')]
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(['Date', 'Type', 'Reference', 'Client', 'Amount'])
+    writer.writerow(['Date', 'Type', 'Reference', 'Client', 'Amount', 'Reversal Status', 'Reversal Reason'])
     for t in income_rows:
         client = f"{t.get('client_code', '')} - {t.get('client_name', '')}" if t.get('client_code') else ''
-        writer.writerow([t['transaction_date'], t.get('transaction_type', 'Receipt'), t['reference'], client, t['amount']])
+        rev_status, rev_reason = _office_reversal_report_fields(t)
+        writer.writerow([t['transaction_date'], t.get('transaction_type', 'Receipt'), t['reference'], client, t['amount'], rev_status, rev_reason])
     total = db.get_office_income_total(date_from, date_to)
     writer.writerow(['', '', '', 'Total', str(total)])
     buffer.seek(0)
@@ -4113,9 +4188,10 @@ def export_office_expenses_csv():
     expenses = [t for t in transactions if t['transaction_type'] == 'Payment' and t.get('status') != 'Declined']
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(['Date', 'Reference', 'Source', 'Description', 'Amount', 'Created By'])
+    writer.writerow(['Date', 'Reference', 'Source', 'Description', 'Amount', 'Created By', 'Reversal Status', 'Reversal Reason'])
     for t in expenses:
-        writer.writerow([t['transaction_date'], t['reference'], t['source'], t.get('description') or '', t['amount'], t.get('created_by', 'System')])
+        rev_status, rev_reason = _office_reversal_report_fields(t)
+        writer.writerow([t['transaction_date'], t['reference'], t['source'], t.get('description') or '', t['amount'], t.get('created_by', 'System'), rev_status, rev_reason])
     total = db.get_office_expenses_total(date_from, date_to)
     writer.writerow(['', '', '', 'Total', str(total)])
     buffer.seek(0)
@@ -4254,11 +4330,12 @@ def export_office_income_xlsx():
         transactions = db.get_office_transactions(start_date=date_from, end_date=date_to, created_by=created_by)
         income_rows = [t for t in transactions if t.get('transaction_type') in ('Receipt', 'Fee Transfer')]
         total = db.get_office_income_total(date_from, date_to)
-        headers = ['Date', 'Type', 'Reference', 'Client', 'Amount']
+        headers = ['Date', 'Type', 'Reference', 'Client', 'Amount', 'Reversal Status', 'Reversal Reason']
         rows = []
         for t in income_rows:
             client = f"{t.get('client_code', '')} - {t.get('client_name', '')}" if t.get('client_code') else ''
-            rows.append([t['transaction_date'], t.get('transaction_type', 'Receipt'), t['reference'], client, float(t['amount'])])
+            rev_status, rev_reason = _office_reversal_report_fields(t)
+            rows.append([t['transaction_date'], t.get('transaction_type', 'Receipt'), t['reference'], client, float(t['amount']), rev_status, rev_reason])
         rows.append(['', '', '', 'Total', float(total)])
         data = _build_xlsx(headers, rows, 'Office Income')
         fn = f"office_income_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
@@ -4280,10 +4357,11 @@ def export_office_expenses_xlsx():
         transactions = db.get_office_transactions(start_date=date_from, end_date=date_to, created_by=created_by)
         expenses = [t for t in transactions if t['transaction_type'] == 'Payment' and t.get('status') != 'Declined']
         total = db.get_office_expenses_total(date_from, date_to)
-        headers = ['Date', 'Reference', 'Source', 'Description', 'Amount', 'Created By']
+        headers = ['Date', 'Reference', 'Source', 'Description', 'Amount', 'Created By', 'Reversal Status', 'Reversal Reason']
         rows = []
         for t in expenses:
-            rows.append([t['transaction_date'], t['reference'], t['source'], t.get('description') or '', float(t['amount']), t.get('created_by', 'System')])
+            rev_status, rev_reason = _office_reversal_report_fields(t)
+            rows.append([t['transaction_date'], t['reference'], t['source'], t.get('description') or '', float(t['amount']), t.get('created_by', 'System'), rev_status, rev_reason])
         rows.append(['', '', '', 'Total', float(total), ''])
         data = _build_xlsx(headers, rows, 'Office Expenses')
         fn = f"office_expenses_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"

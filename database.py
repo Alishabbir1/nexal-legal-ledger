@@ -39,6 +39,10 @@ _CASHBOOK_BALANCE_EFFECTIVE_SQL_CB = """
               AND (cb.reversal_status IS NULL OR cb.reversal_status != 'REVERSED')
               AND (COALESCE(cb.reversal_depth, 0) % 2 = 0)
 """
+_OFFICE_CB_BALANCE_EFFECTIVE_SQL = """
+              AND (reversal_status IS NULL OR reversal_status != 'REVERSED')
+              AND (COALESCE(reversal_depth, 0) % 2 = 0)
+"""
 
 
 def _ledger_row_counts_toward_running_balance(row: dict) -> bool:
@@ -596,6 +600,12 @@ class Database:
         self._ensure_column(cursor, 'office_cashbook', 'needs_vat_re_review', "INTEGER DEFAULT 0")
         self._ensure_column(cursor, 'office_cashbook', 'vat_quarter_key', "TEXT")
         self._ensure_column(cursor, 'office_cashbook', 'is_desc_amount_duplicate', "INTEGER DEFAULT 0")
+        self._ensure_column(cursor, 'office_cashbook', 'reversal_status', "TEXT DEFAULT 'ACTIVE'")
+        self._ensure_column(cursor, 'office_cashbook', 'reversed_at', "TIMESTAMP")
+        self._ensure_column(cursor, 'office_cashbook', 'reversed_by', "TEXT")
+        self._ensure_column(cursor, 'office_cashbook', 'reversal_of', "INTEGER")
+        self._ensure_column(cursor, 'office_cashbook', 'reversal_reason', "TEXT")
+        self._ensure_column(cursor, 'office_cashbook', 'reversal_depth', "INTEGER DEFAULT 0")
         self._ensure_column(cursor, 'vat_settings', 'period_start_override', "TEXT")
 
         conn.commit()
@@ -2915,7 +2925,7 @@ class Database:
                         WHERE status = 'Cleared'
                           AND COALESCE(is_deleted, 0) = 0
                           AND transaction_date <= ?
-                        """,
+                        """ + _OFFICE_CB_BALANCE_EFFECTIVE_SQL,
                         (transaction_date,),
                     )
                     balance = Decimal(str(cursor.fetchone()[0] or 0))
@@ -4246,7 +4256,7 @@ class Database:
             FROM office_cashbook
             WHERE status = 'Cleared'
               AND COALESCE(is_deleted, 0) = 0
-        """
+        """ + _OFFICE_CB_BALANCE_EFFECTIVE_SQL
         params3 = []
         if as_of_date:
             q3 += " AND transaction_date <= ?"
@@ -4328,6 +4338,13 @@ class Database:
                 'vat_exclusion_reason': oc.get('vat_exclusion_reason'),
                 'needs_vat_re_review': oc.get('needs_vat_re_review'),
                 'is_desc_amount_duplicate': oc.get('is_desc_amount_duplicate'),
+                'reversal_status': oc.get('reversal_status') or 'ACTIVE',
+                'reversed_at': oc.get('reversed_at'),
+                'reversed_by': oc.get('reversed_by'),
+                'reversal_of': oc.get('reversal_of'),
+                'reversal_reason': oc.get('reversal_reason'),
+                'reversal_depth': oc.get('reversal_depth') or 0,
+                'is_reversal_entry': oc.get('reversal_of') is not None,
             })
 
         # Legacy unlinked cashbook (kept for backward compatibility)
@@ -4378,7 +4395,9 @@ class Database:
                           and (cb.get('reversal_depth') or 0) % 2 == 0)
         oc_rows = self._get_office_cashbook_rows(start_date, end_date)
         oc_receipts = sum(Decimal(str(oc['amount'])) for oc in oc_rows
-                         if oc['transaction_type'] == 'Receipt' and oc['status'] == 'Cleared')
+                         if oc['transaction_type'] == 'Receipt' and oc['status'] == 'Cleared'
+                         and (oc.get('reversal_status') or 'ACTIVE') != 'REVERSED'
+                         and (oc.get('reversal_depth') or 0) % 2 == 0)
         return fee_total + receipt_total + oc_receipts
 
     def get_office_expenses_total(self, start_date: str = None, end_date: str = None) -> Decimal:
@@ -4403,7 +4422,9 @@ class Database:
                       and (cb.get('reversal_depth') or 0) % 2 == 0)
         oc_rows = self._get_office_cashbook_rows(start_date, end_date)
         oc_payments = sum(Decimal(str(oc['amount'])) for oc in oc_rows
-                         if oc['transaction_type'] == 'Payment' and oc['status'] == 'Cleared')
+                         if oc['transaction_type'] == 'Payment' and oc['status'] == 'Cleared'
+                         and (oc.get('reversal_status') or 'ACTIVE') != 'REVERSED'
+                         and (oc.get('reversal_depth') or 0) % 2 == 0)
         return cb_total + oc_payments
     
     def get_office_cashbook_net_for_reconciliation(self, as_of_date: str = None) -> Decimal:
@@ -4424,7 +4445,7 @@ class Database:
             FROM office_cashbook
             WHERE status = 'Cleared'
               AND COALESCE(is_deleted, 0) = 0
-        """
+        """ + _OFFICE_CB_BALANCE_EFFECTIVE_SQL
         params = []
         if as_of_date:
             query += " AND transaction_date <= ?"
@@ -4433,6 +4454,148 @@ class Database:
         result = Decimal(str(cursor.fetchone()[0] or 0))
         conn.close()
         return result
+
+    def reverse_office_cashbook_transaction(
+        self,
+        office_cashbook_id: int,
+        performed_by: str,
+        reason: str,
+    ) -> Dict:
+        """
+        Reverse an office_cashbook row with an equal and opposite compensating entry.
+
+        - Original marked REVERSED (immutable)
+        - New Cleared row with opposite transaction type
+        - VAT fields mirrored when applicable (boxes recalculate via non-REVERSED rows)
+        - Blocked when the row is in a submitted/locked VAT quarter
+        """
+        reason = (reason or '').strip()
+        if len(reason) < 5:
+            raise ValueError("Reversal reason is mandatory (minimum 5 characters).")
+
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM office_cashbook WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
+                (office_cashbook_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError("Office transaction not found.")
+            original = dict(row)
+        finally:
+            conn.close()
+
+        if original.get('reversal_of'):
+            raise ValueError("Cannot reverse a reversal entry.")
+        if (original.get('reversal_status') or 'ACTIVE') == 'REVERSED':
+            raise ValueError("This transaction has already been reversed.")
+        if original.get('status') != 'Cleared':
+            raise ValueError("Only cleared transactions can be reversed.")
+
+        vat_key = original.get('vat_quarter_key')
+        if vat_key:
+            vat_return = self.get_vat_return(vat_key)
+            if vat_return and vat_return.get('is_locked'):
+                raise ValueError(
+                    "This transaction is in a submitted VAT quarter. Contact HMRC to amend."
+                )
+
+        reverse_date = datetime.now().strftime('%Y-%m-%d')
+        self._ensure_month_unlocked(reverse_date)
+
+        reverse_type = (
+            'Payment' if original['transaction_type'] == 'Receipt' else 'Receipt'
+        )
+        orig_label = (
+            (original.get('description') or '').strip()
+            or (original.get('reference') or '').strip()
+            or f"transaction #{office_cashbook_id}"
+        )
+        reverse_desc = f"Reversal of {orig_label}"
+        reverse_ref = f"REV-OC-{office_cashbook_id}"
+        orig_depth = int(original.get('reversal_depth') or 0)
+        new_depth = orig_depth + 1
+        amount = Decimal(str(original['amount']))
+
+        txn_id = self.reserve_next_transaction_id()
+        last_err = None
+        for attempt in range(DB_WRITE_RETRIES):
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO office_cashbook (
+                        transaction_id, transaction_date, amount, transaction_type,
+                        reference, source, description, status, cleared_date,
+                        created_by, vat_applicable, gross_amount, net_amount, vat_amount,
+                        vat_quarter_key, reversal_of, reversal_status, reversal_depth
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Cleared', ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+                    """,
+                    (
+                        txn_id,
+                        reverse_date,
+                        str(amount),
+                        reverse_type,
+                        reverse_ref,
+                        original.get('source') or 'Bank Transfer',
+                        reverse_desc,
+                        reverse_date,
+                        performed_by,
+                        1 if original.get('vat_applicable') else 0,
+                        original.get('gross_amount'),
+                        original.get('net_amount'),
+                        original.get('vat_amount'),
+                        original.get('vat_quarter_key'),
+                        office_cashbook_id,
+                        new_depth,
+                    ),
+                )
+                reversal_id = cursor.lastrowid
+                cursor.execute(
+                    """
+                    UPDATE office_cashbook
+                    SET reversal_status = 'REVERSED',
+                        reversed_at = CURRENT_TIMESTAMP,
+                        reversed_by = ?,
+                        reversal_reason = ?
+                    WHERE id = ?
+                    """,
+                    (performed_by, reason[:500], office_cashbook_id),
+                )
+                conn.commit()
+                vat_impact = ''
+                if original.get('vat_applicable'):
+                    vat_impact = (
+                        f" VAT £{original.get('vat_amount') or '0'} "
+                        f"({'output' if original['transaction_type'] == 'Receipt' else 'input'} reversed)."
+                    )
+                return {
+                    'original_id': office_cashbook_id,
+                    'reversal_id': reversal_id,
+                    'reversal_transaction_id': txn_id,
+                    'original_type': original['transaction_type'],
+                    'reversal_type': reverse_type,
+                    'amount': amount,
+                    'vat_applicable': bool(original.get('vat_applicable')),
+                    'vat_amount': original.get('vat_amount'),
+                    'vat_quarter_key': original.get('vat_quarter_key'),
+                    'vat_impact': vat_impact,
+                    'reason': reason,
+                }
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                last_err = e
+                if 'locked' in str(e).lower() or 'busy' in str(e).lower():
+                    _log_db_retry('reverse_office_cashbook_transaction', attempt + 1, e)
+                    time.sleep(DB_WRITE_RETRY_DELAY)
+                else:
+                    raise ValueError(f"Database error: {e}") from e
+            finally:
+                conn.close()
+        raise ValueError(f"Database busy after {DB_WRITE_RETRIES} retries: {last_err}")
 
     def get_current_reconciliations(self) -> List[Dict]:
         """Return the active (current) reconciliation for each month — operational view."""

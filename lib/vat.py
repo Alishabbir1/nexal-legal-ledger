@@ -247,6 +247,8 @@ def calculate_hmrc_boxes(transactions: list[dict[str, Any]]) -> dict[str, Decima
             continue
         if txn.get('is_deleted'):
             continue
+        if (txn.get('reversal_status') or 'ACTIVE') == 'REVERSED':
+            continue
 
         amount = Decimal(str(txn.get('amount') or '0'))
         vat_applicable = bool(txn.get('vat_applicable'))

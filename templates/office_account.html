@@ -132,6 +132,10 @@
         </div>
     </form>
     
+    <style>
+    .office-row-reversed td { opacity: 0.45; }
+    </style>
+    
     <table>
         <thead>
             <tr>
@@ -151,7 +155,9 @@
         <tbody>
             {% for trans in transactions %}
             {% set status = trans.get('status') or 'Cleared' %}
-            <tr{% if status == 'Pending' %} style="background-color: #fffbe6;"{% elif status == 'Declined' %} style="background-color: #fff0f0; opacity: 0.7;"{% endif %}>
+            {% set r_status = trans.get('reversal_status') or 'ACTIVE' %}
+            {% set is_reversal = trans.get('is_reversal_entry') %}
+            <tr{% if status == 'Pending' %} style="background-color: #fffbe6;"{% elif status == 'Declined' %} style="background-color: #fff0f0; opacity: 0.7;"{% elif r_status == 'REVERSED' %} class="office-row-reversed"{% endif %}>
                 <td><code>{{ trans.transaction_id or '-' }}</code></td>
                 <td>{{ trans.transaction_date }}</td>
                 <td>{{ trans.transaction_type }}{% if status == 'Pending' %} <small style="color:#e67e22; font-weight:600;">(Pending)</small>{% endif %}</td>
@@ -177,7 +183,14 @@
                 <td>{{ trans.reference }}</td>
                 <td>{{ trans.source }}</td>
                 <td>
-                    {% if status == 'Pending' %}
+                    {% if r_status == 'REVERSED' %}
+                    <span class="status-badge status-declined" title="Reversed by {{ trans.reversed_by or 'Admin' }}">Reversed</span>
+                    {% if trans.get('reversal_reason') %}
+                    <br><small style="color: var(--text-muted);">{{ trans.reversal_reason }}</small>
+                    {% endif %}
+                    {% elif is_reversal %}
+                    <span class="status-badge status-pending">Reversal</span>
+                    {% elif status == 'Pending' %}
                     <span class="status-badge status-pending" title="Cheque awaiting clearance - does not affect balance">Pending Cheque</span>
                     {% elif status == 'Declined' %}
                     <span class="status-badge status-declined" title="Cheque was declined - not counted in balance">Declined</span>
@@ -221,6 +234,16 @@
                         </button>
                     </form>
                     {% endif %}
+                    {% elif current_role == 'admin' and trans.get('office_cashbook_id') and status == 'Cleared' and r_status != 'REVERSED' and not is_reversal %}
+                    <button type="button"
+                            class="btn btn-secondary reverse-office-btn"
+                            style="padding: 5px 10px; font-size: 12px;"
+                            data-office-id="{{ trans.office_cashbook_id }}"
+                            data-txn-type="{{ trans.transaction_type }}"
+                            data-amount="{{ trans.amount }}"
+                            data-description="{{ (trans.description or trans.reference or '')|e }}">
+                        Reverse
+                    </button>
                     {% endif %}
                 </td>
             </tr>
@@ -232,6 +255,33 @@
             {% endif %}
         </tbody>
     </table>
+</div>
+
+<!-- Office Transaction Reversal Modal (Admin only) -->
+<div id="office-reversal-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-box" style="max-width: 480px;">
+        <h3 style="margin-bottom: 12px;">Reverse Office Transaction</h3>
+        <p class="modal-message" style="margin-bottom: 12px; font-size: 13px; color: var(--text-secondary);">
+            Creates an equal and opposite entry. The original stays on file and is marked reversed.
+        </p>
+        <div style="font-size: 13px; margin-bottom: 16px; padding: 10px 12px; background: var(--bg-base); border-radius: 6px;">
+            <div><strong>Type:</strong> <span id="office-reversal-type"></span></div>
+            <div><strong>Amount:</strong> <span id="office-reversal-amount"></span></div>
+            <div><strong>Description:</strong> <span id="office-reversal-desc"></span></div>
+        </div>
+        <form id="officeReversalForm" method="POST" action="#">
+            <div class="form-group" style="margin-bottom: 16px;">
+                <label>Reason for reversal <span style="color: var(--danger);">*</span></label>
+                <textarea name="reversal_reason" id="office-reversal-reason" required minlength="5"
+                          placeholder="Minimum 5 characters — required for audit trail"
+                          style="width: 100%; min-height: 80px; padding: 8px;"></textarea>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button type="submit" class="btn btn-danger">Confirm Reversal</button>
+                <button type="button" id="office-reversal-cancel" class="btn btn-secondary">Cancel</button>
+            </div>
+        </form>
+    </div>
 </div>
 
 <!-- Decline Office Cheque Modal (Reason Required) -->
@@ -447,6 +497,45 @@
             clearImportForm = null;
         }
     };
+
+    // ── Office transaction reversal (admin only) ────────────────
+    var reversalModal = document.getElementById('office-reversal-modal');
+    var reversalForm = document.getElementById('officeReversalForm');
+    var reversalCancel = document.getElementById('office-reversal-cancel');
+    var reverseUrlPrefix = '{{ url_for("reverse_office_transaction", office_cashbook_id=0) }}'.replace('/0', '');
+
+    document.querySelectorAll('.reverse-office-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var id = this.getAttribute('data-office-id');
+            var txnType = this.getAttribute('data-txn-type') || '';
+            var amount = this.getAttribute('data-amount') || '';
+            var desc = this.getAttribute('data-description') || '—';
+            document.getElementById('office-reversal-type').textContent = txnType;
+            document.getElementById('office-reversal-amount').textContent = '£' + parseFloat(amount).toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('office-reversal-desc').textContent = desc;
+            document.getElementById('office-reversal-reason').value = '';
+            reversalForm.action = reverseUrlPrefix + '/' + id;
+            reversalModal.style.display = 'flex';
+        });
+    });
+
+    reversalCancel.onclick = function() {
+        reversalModal.style.display = 'none';
+    };
+
+    reversalModal.onclick = function(e) {
+        if (e.target === reversalModal) {
+            reversalModal.style.display = 'none';
+        }
+    };
+
+    reversalForm.addEventListener('submit', function(e) {
+        var reason = document.getElementById('office-reversal-reason').value.trim();
+        if (reason.length < 5) {
+            e.preventDefault();
+            alert('Please enter a reversal reason (minimum 5 characters).');
+        }
+    });
 })();
 </script>
 {% endblock %}
