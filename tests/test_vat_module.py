@@ -801,6 +801,28 @@ def test_save_month_does_not_change_quarter_totals(client):
     assert b"300.00" in resp.data
 
 
+def test_save_draft_same_as_save_month(client):
+    """Save Draft and Save Month both save the calendar month to Saved Months."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-10-15")
+
+    resp = client.post(
+        "/office-account/vat/return/save",
+        data={
+            "quarter_key": "2026-12-31",
+            "year": "2026",
+            "month": "10",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"October 2026 saved" in resp.data
+    assert b"Saved Months" in resp.data
+    assert len(db.list_vat_saved_months("2026-12-31")) == 1
+
+
 def test_save_month_not_available_on_locked_quarter(client):
     """Submitted quarters do not show Save Month."""
     _login_admin(client)

@@ -54,7 +54,7 @@
             {% endif %}
         </div>
         <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 12px;">
-            Firm records only — saving a month does not submit or lock anything for HMRC.
+            Firm records only — Save Month and Save Draft both save the current month here.
             The 9 boxes below always show the combined quarter total.
         </p>
 
@@ -128,6 +128,10 @@
 
     <form method="POST" id="vatReturnForm">
         <input type="hidden" name="quarter_key" value="{{ quarter.quarter_key }}">
+        {% if saveable_month %}
+        <input type="hidden" name="year" value="{{ saveable_month.year }}">
+        <input type="hidden" name="month" value="{{ saveable_month.month }}">
+        {% endif %}
 
         <h4 style="margin: 0 0 12px; font-size: 14px;">HMRC VAT Return — 9 Boxes</h4>
         <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
@@ -182,9 +186,11 @@
                    placeholder="e.g. HMRC confirmation reference">
         </div>
         <div style="margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap;">
+            {% if saveable_month %}
             <button type="submit" formaction="{{ url_for('vat_return_save') }}" class="btn btn-secondary">
-                Save Draft
+                Save Draft{% if saveable_month.label %} — {{ saveable_month.label }}{% endif %}
             </button>
+            {% endif %}
             <button type="submit" formaction="{{ url_for('vat_return_submit') }}" class="btn btn-primary"
                     onclick="return confirm('Submit and lock this VAT quarter? This cannot be undone.');">
                 Submit VAT Return

@@ -2473,43 +2473,8 @@ def vat_return():
     )
 
 
-@app.route('/office-account/vat/return/save', methods=['POST'])
-@require_admin
-def vat_return_save():
-    settings = db.get_vat_settings()
-    if not settings.get('activated'):
-        return redirect(url_for('vat_setup'))
-
-    cycle, bad = _require_valid_vat_cycle(settings)
-    if bad:
-        return bad
-
-    quarter_key = request.form.get('quarter_key', '').strip()
-    quarter, calculated, _, vat_return, _ = _vat_quarter_context(
-        cycle, quarter_key or None, vat_settings=settings
-    )
-    if vat_return and vat_return.get('is_locked'):
-        flash('This VAT quarter is submitted and locked — no edits allowed.', 'error')
-        return redirect(url_for('vat_return', quarter=quarter_key))
-
-    final_boxes = {}
-    for i in range(1, 10):
-        key = f'box{i}'
-        try:
-            final_boxes[key] = Decimal(request.form.get(key, '0') or '0')
-        except Exception:
-            final_boxes[key] = Decimal('0')
-
-    db.save_vat_return_draft(quarter, calculated, final_boxes, current_username())
-    log_audit('Office Account', 'VAT_RETURN_DRAFT_SAVED', details=f"Quarter ending {quarter_key}")
-    flash('VAT return draft saved.', 'success')
-    return redirect(url_for('vat_return', quarter=quarter_key))
-
-
-@app.route('/office-account/vat/return/save-month', methods=['POST'])
-@require_admin
-def vat_return_save_month():
-    """Save a calendar month within the open quarter (firm records only — not HMRC)."""
+def _save_vat_month_action():
+    """Save the requested (or next saveable) calendar month within the open quarter."""
     from lib.vat import calendar_month_label
 
     settings = db.get_vat_settings()
@@ -2566,6 +2531,20 @@ def vat_return_save_month():
     )
     flash(f'{calendar_month_label(year, month)} saved for your records.', 'success')
     return redirect(url_for('vat_return', quarter=quarter['quarter_key']))
+
+
+@app.route('/office-account/vat/return/save', methods=['POST'])
+@require_admin
+def vat_return_save():
+    """Save the current calendar month (same as Save Month — firm records only)."""
+    return _save_vat_month_action()
+
+
+@app.route('/office-account/vat/return/save-month', methods=['POST'])
+@require_admin
+def vat_return_save_month():
+    """Save a calendar month within the open quarter (firm records only — not HMRC)."""
+    return _save_vat_month_action()
 
 
 @app.route('/office-account/vat/return/submit', methods=['POST'])
