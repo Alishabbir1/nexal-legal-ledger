@@ -550,6 +550,21 @@ class Database:
             ON vat_description_rules(description_normalized)
         """)
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vat_saved_months (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quarter_key TEXT NOT NULL,
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                saved_by TEXT NOT NULL,
+                UNIQUE(quarter_key, year, month)
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vat_saved_months_quarter "
+            "ON vat_saved_months(quarter_key, year, month)"
+        )
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS vat_returns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 quarter_key TEXT NOT NULL UNIQUE,
@@ -4988,6 +5003,57 @@ class Database:
                 ),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    def save_vat_month(
+        self, quarter_key: str, year: int, month: int, saved_by: str
+    ) -> None:
+        """Record a calendar month as saved within an open VAT quarter (firm records only)."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO vat_saved_months (quarter_key, year, month, saved_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(quarter_key, year, month) DO NOTHING
+                """,
+                (quarter_key, year, month, saved_by),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_vat_saved_months(self, quarter_key: str) -> List[Dict]:
+        """Saved months for a quarter, ordered chronologically."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM vat_saved_months
+                WHERE quarter_key = ?
+                ORDER BY year ASC, month ASC
+                """,
+                (quarter_key,),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def is_vat_month_saved(self, quarter_key: str, year: int, month: int) -> bool:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT 1 FROM vat_saved_months
+                WHERE quarter_key = ? AND year = ? AND month = ?
+                """,
+                (quarter_key, year, month),
+            )
+            return cursor.fetchone() is not None
         finally:
             conn.close()
 

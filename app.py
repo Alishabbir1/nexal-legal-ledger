@@ -1793,6 +1793,113 @@ def _build_vat_history_entries(cycle_key: str) -> list:
     return entries
 
 
+def _filter_txns_for_calendar_month(txns: list, year: int, month: int) -> list:
+    from lib.vat import transaction_in_calendar_month
+
+    return [
+        t for t in txns
+        if transaction_in_calendar_month(t.get('transaction_date'), year, month)
+    ]
+
+
+def _month_has_vat_activity(txns: list) -> bool:
+    return any(
+        t.get('vat_applicable')
+        and not t.get('is_vat_excluded')
+        and not t.get('is_deleted')
+        and (t.get('status') or 'Cleared') == 'Cleared'
+        for t in txns
+    )
+
+
+def _resolve_saveable_vat_month(quarter: dict, txns: list) -> Optional[dict]:
+    """
+    Earliest unsaved calendar month in the quarter with cleared VAT activity.
+
+    Firms save months in order after approving each bank statement.
+    """
+    from lib.vat import iter_calendar_months_in_quarter
+
+    quarter_key = quarter['quarter_key']
+    for year, month in iter_calendar_months_in_quarter(quarter):
+        if db.is_vat_month_saved(quarter_key, year, month):
+            continue
+        month_txns = _filter_txns_for_calendar_month(txns, year, month)
+        if _month_has_vat_activity(month_txns):
+            return {'year': year, 'month': month}
+    return None
+
+
+def _build_vat_transaction_rows(txns: list) -> list:
+    """VAT transactions with gross/net/VAT split for saved-month detail panels."""
+    from lib.vat import split_vat_gross
+
+    rows = []
+    for txn in txns:
+        if txn.get('is_vat_excluded') or txn.get('is_deleted'):
+            continue
+        if (txn.get('status') or 'Cleared') != 'Cleared':
+            continue
+        if not txn.get('vat_applicable'):
+            continue
+
+        amount = Decimal(str(txn.get('amount') or '0'))
+        gross = Decimal(str(txn.get('gross_amount') or txn.get('amount') or '0'))
+        net = Decimal(str(txn.get('net_amount') or '0'))
+        vat = Decimal(str(txn.get('vat_amount') or '0'))
+        if vat == 0 and net == 0 and gross > 0:
+            gross, net, vat = split_vat_gross(gross)
+
+        rows.append({
+            'id': txn.get('id'),
+            'transaction_date': txn.get('transaction_date') or '',
+            'description': txn.get('description') or txn.get('reference') or '—',
+            'transaction_type': txn.get('transaction_type') or '',
+            'gross': gross,
+            'net': net,
+            'vat': vat,
+        })
+    return rows
+
+
+def _build_vat_saved_month_entries(quarter: dict, txns: list) -> list:
+    """Saved calendar months within the open quarter with totals and detail rows."""
+    from lib.vat import calculate_hmrc_boxes, calendar_month_label, quarter_summary_from_boxes
+
+    entries = []
+    for rec in db.list_vat_saved_months(quarter['quarter_key']):
+        year = int(rec['year'])
+        month = int(rec['month'])
+        month_txns = _filter_txns_for_calendar_month(txns, year, month)
+        boxes = calculate_hmrc_boxes(month_txns)
+        summary = quarter_summary_from_boxes(boxes)
+        saved_at = rec.get('saved_at') or ''
+        if saved_at and len(saved_at) >= 10:
+            try:
+                saved_display = datetime.strptime(
+                    saved_at[:10], '%Y-%m-%d'
+                ).strftime('%d %b %Y')
+            except ValueError:
+                saved_display = saved_at[:10]
+        else:
+            saved_display = '—'
+
+        entries.append({
+            'year': year,
+            'month': month,
+            'month_key': f'{year}-{month:02d}',
+            'label': calendar_month_label(year, month),
+            'output_vat': summary['output_vat'],
+            'input_vat': summary['input_vat'],
+            'net_owed': summary['net_owed'],
+            'saved_at': saved_at,
+            'saved_display': saved_display,
+            'saved_by': rec.get('saved_by') or '',
+            'transactions': _build_vat_transaction_rows(month_txns),
+        })
+    return entries
+
+
 @app.route('/office-account/import-statement', methods=['GET', 'POST'])
 def office_import_statement():
     """
@@ -2324,7 +2431,7 @@ def vat_return():
     else:
         open_key = _resolve_vat_active_quarter(cycle)['quarter_key']
 
-    quarter, calculated, summary, vat_return, _ = _vat_quarter_context(
+    quarter, calculated, summary, vat_return, quarter_txns = _vat_quarter_context(
         cycle, open_key, vat_settings=settings
     )
 
@@ -2336,6 +2443,18 @@ def vat_return():
         user_figures = _vat_user_figures(vat_return, calculated)
 
     from lib.vat import quarter_ordinal_label, quarter_period_label
+
+    saved_months = []
+    saveable_month = None
+    if not vat_return or not vat_return.get('is_locked'):
+        saved_months = _build_vat_saved_month_entries(quarter, quarter_txns)
+        raw_saveable = _resolve_saveable_vat_month(quarter, quarter_txns)
+        if raw_saveable:
+            from lib.vat import calendar_month_label
+            saveable_month = {
+                **raw_saveable,
+                'label': calendar_month_label(raw_saveable['year'], raw_saveable['month']),
+            }
 
     return render_template(
         'vat_return.html',
@@ -2349,6 +2468,8 @@ def vat_return():
         settings=settings,
         submitted_history=_build_vat_history_entries(cycle),
         expand_key=expand_key,
+        saved_months=saved_months,
+        saveable_month=saveable_month,
     )
 
 
@@ -2383,6 +2504,68 @@ def vat_return_save():
     log_audit('Office Account', 'VAT_RETURN_DRAFT_SAVED', details=f"Quarter ending {quarter_key}")
     flash('VAT return draft saved.', 'success')
     return redirect(url_for('vat_return', quarter=quarter_key))
+
+
+@app.route('/office-account/vat/return/save-month', methods=['POST'])
+@require_admin
+def vat_return_save_month():
+    """Save a calendar month within the open quarter (firm records only — not HMRC)."""
+    from lib.vat import calendar_month_label
+
+    settings = db.get_vat_settings()
+    if not settings.get('activated'):
+        return redirect(url_for('vat_setup'))
+
+    cycle, bad = _require_valid_vat_cycle(settings)
+    if bad:
+        return bad
+
+    quarter_key = request.form.get('quarter_key', '').strip()
+    quarter, _, _, vat_return, txns = _vat_quarter_context(
+        cycle, quarter_key or None, vat_settings=settings
+    )
+    if vat_return and vat_return.get('is_locked'):
+        flash('This VAT quarter is submitted and locked.', 'error')
+        return redirect(url_for('vat_return', quarter=quarter_key))
+
+    year_raw = request.form.get('year', '').strip()
+    month_raw = request.form.get('month', '').strip()
+    saveable = _resolve_saveable_vat_month(quarter, txns)
+
+    if year_raw and month_raw:
+        try:
+            year = int(year_raw)
+            month = int(month_raw)
+        except ValueError:
+            flash('Invalid month selection.', 'error')
+            return redirect(url_for('vat_return', quarter=quarter['quarter_key']))
+    elif saveable:
+        year = saveable['year']
+        month = saveable['month']
+    else:
+        flash('No VAT activity found in an unsaved month for this quarter.', 'info')
+        return redirect(url_for('vat_return', quarter=quarter['quarter_key']))
+
+    if db.is_vat_month_saved(quarter['quarter_key'], year, month):
+        flash(f'{calendar_month_label(year, month)} is already saved.', 'info')
+        return redirect(url_for('vat_return', quarter=quarter['quarter_key']))
+
+    month_txns = _filter_txns_for_calendar_month(txns, year, month)
+    if not _month_has_vat_activity(month_txns):
+        flash(
+            f'No cleared VAT transactions found for {calendar_month_label(year, month)}.',
+            'error',
+        )
+        return redirect(url_for('vat_return', quarter=quarter['quarter_key']))
+
+    db.save_vat_month(quarter['quarter_key'], year, month, current_username())
+    log_audit(
+        'Office Account',
+        'VAT_MONTH_SAVED',
+        details=f"{calendar_month_label(year, month)} (quarter {quarter['quarter_key']})",
+    )
+    flash(f'{calendar_month_label(year, month)} saved for your records.', 'success')
+    return redirect(url_for('vat_return', quarter=quarter['quarter_key']))
 
 
 @app.route('/office-account/vat/return/submit', methods=['POST'])

@@ -15,6 +15,7 @@ def _reset_vat_test_db():
     conn = app_module.db.get_connection()
     try:
         conn.execute("DELETE FROM office_statement_history")
+        conn.execute("DELETE FROM vat_saved_months")
         conn.execute("DELETE FROM vat_returns")
         conn.execute("DELETE FROM vat_description_rules")
         conn.execute("DELETE FROM vat_settings")
@@ -656,3 +657,166 @@ def test_unsubmitted_prior_quarter_reminder(client):
     assert reminders_after == []
     resp2 = client.get("/office-account")
     assert b"Unsubmitted VAT Quarter" not in resp2.data
+
+
+def _insert_vat_payment(db, txn_date: str, amount: str = "240"):
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO office_cashbook (
+                transaction_id, transaction_date, amount, transaction_type,
+                reference, source, status, created_by,
+                vat_applicable, gross_amount, net_amount, vat_amount
+            ) VALUES (?, ?, ?, 'Payment', 'PAY', 'Bank Transfer', 'Cleared', 'admin', 1, ?, ?, ?)
+            """,
+            (
+                f"P-{txn_date}",
+                txn_date,
+                amount,
+                amount,
+                str(Decimal(amount) / Decimal("1.2")),
+                str(Decimal(amount) - Decimal(amount) / Decimal("1.2")),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_save_month_creates_collapsed_row(client):
+    """Save Month records a calendar month and shows it in the saved months accordion."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-10-15")
+    _insert_vat_payment(db, "2026-10-20")
+
+    resp = client.get("/office-account/vat/return")
+    assert resp.status_code == 200
+    assert b"Save Month" in resp.data
+    assert b"October 2026" in resp.data
+
+    resp = client.post(
+        "/office-account/vat/return/save-month",
+        data={
+            "quarter_key": "2026-12-31",
+            "year": "2026",
+            "month": "10",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"October 2026 saved" in resp.data
+    assert b"Saved Months" in resp.data
+    assert b"Output" in resp.data and b"Input" in resp.data
+    assert b"Saved</span>" in resp.data or b">Saved</span>" in resp.data
+
+    saved = db.list_vat_saved_months("2026-12-31")
+    assert len(saved) == 1
+    assert saved[0]["year"] == 2026
+    assert saved[0]["month"] == 10
+
+
+def test_save_month_expanded_shows_transaction_splits(client):
+    """Expanded saved month lists VAT transactions with gross/net/VAT columns."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-11-05", "1200")
+
+    client.post(
+        "/office-account/vat/return/save-month",
+        data={
+            "quarter_key": "2026-12-31",
+            "year": "2026",
+            "month": "11",
+        },
+        follow_redirects=True,
+    )
+
+    resp = client.get("/office-account/vat/return")
+    assert resp.status_code == 200
+    assert b"November 2026" in resp.data
+    assert b"Gross" in resp.data
+    assert b"Net" in resp.data
+    assert b"VAT" in resp.data
+    assert b"1,000.00" in resp.data
+    assert b"200.00" in resp.data
+
+
+def test_multiple_saved_months_stack_in_quarter(client):
+    """Several months can be saved within the same open quarter."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-10-10")
+    _insert_vat_receipt(db, "2026-11-15")
+    _insert_vat_receipt(db, "2026-12-05")
+
+    for month in (10, 11, 12):
+        client.post(
+            "/office-account/vat/return/save-month",
+            data={
+                "quarter_key": "2026-12-31",
+                "year": "2026",
+                "month": str(month),
+            },
+            follow_redirects=True,
+        )
+
+    resp = client.get("/office-account/vat/return")
+    assert resp.status_code == 200
+    assert b"October 2026" in resp.data
+    assert b"November 2026" in resp.data
+    assert b"December 2026" in resp.data
+    assert len(db.list_vat_saved_months("2026-12-31")) == 3
+
+
+def test_save_month_does_not_change_quarter_totals(client):
+    """Saving a month is firm records only — quarter HMRC boxes stay combined."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-10-15", "1200")
+    _insert_vat_receipt(db, "2026-11-15", "600")
+
+    _, boxes_before, _, _, _ = app_module._vat_quarter_context(
+        "mar_jun_sep_dec", "2026-12-31", vat_settings=db.get_vat_settings()
+    )
+    assert boxes_before["box1"] == Decimal("300.00")
+
+    client.post(
+        "/office-account/vat/return/save-month",
+        data={"quarter_key": "2026-12-31", "year": "2026", "month": "10"},
+        follow_redirects=True,
+    )
+
+    _, boxes_after, _, _, _ = app_module._vat_quarter_context(
+        "mar_jun_sep_dec", "2026-12-31", vat_settings=db.get_vat_settings()
+    )
+    assert boxes_after["box1"] == Decimal("300.00")
+
+    resp = client.get("/office-account/vat/return")
+    assert b"300.00" in resp.data
+
+
+def test_save_month_not_available_on_locked_quarter(client):
+    """Submitted quarters do not show Save Month."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    _insert_vat_receipt(db, "2026-11-15")
+
+    client.post(
+        "/office-account/vat/return/submit",
+        data={
+            "quarter_key": "2026-12-31",
+            **{f"box{i}": "200.00" if i == 1 else "0.00" for i in range(1, 10)},
+        },
+        follow_redirects=True,
+    )
+
+    resp = client.get("/office-account/vat/return?quarter=2026-12-31")
+    assert resp.status_code == 200
+    assert b"Save Month" not in resp.data

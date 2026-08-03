@@ -38,6 +38,94 @@
         </div>
     </div>
 
+    {% if saved_months or saveable_month %}
+    <div style="margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+            <h4 style="margin: 0; font-size: 14px;">Saved Months — {{ quarter_period }}</h4>
+            {% if saveable_month %}
+            <form method="POST" action="{{ url_for('vat_return_save_month') }}" style="margin: 0;">
+                <input type="hidden" name="quarter_key" value="{{ quarter.quarter_key }}">
+                <input type="hidden" name="year" value="{{ saveable_month.year }}">
+                <input type="hidden" name="month" value="{{ saveable_month.month }}">
+                <button type="submit" class="btn btn-secondary btn-sm">
+                    Save Month{% if saveable_month.label %} — {{ saveable_month.label }}{% endif %}
+                </button>
+            </form>
+            {% endif %}
+        </div>
+        <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 12px;">
+            Firm records only — saving a month does not submit or lock anything for HMRC.
+            The 9 boxes below always show the combined quarter total.
+        </p>
+
+        {% if saved_months %}
+        <div class="vat-saved-months-accordion">
+            {% for entry in saved_months %}
+            <div class="vat-saved-month-item" data-month-key="{{ entry.month_key }}">
+                <button type="button" class="vat-saved-month-toggle view-saved-month-btn"
+                        data-month-key="{{ entry.month_key }}"
+                        data-expanded="0"
+                        aria-expanded="false">
+                    <span class="vat-history-chevron">▸</span>
+                    <span class="vat-saved-month-label">{{ entry.label }}</span>
+                    <span class="vat-saved-month-totals">
+                        Output £{{ "{:,.2f}".format(entry.output_vat|float) }}
+                        · Input £{{ "{:,.2f}".format(entry.input_vat|float) }}
+                        · Net £{{ "{:,.2f}".format(entry.net_owed|float) }}
+                    </span>
+                    <span class="status-badge status-cleared vat-saved-month-status">Saved</span>
+                </button>
+                <div class="vat-saved-month-panel" id="vat-month-{{ entry.month_key }}"
+                     style="display: none;">
+                    <div class="vat-saved-month-panel-inner">
+                        <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 12px;">
+                            Saved {{ entry.saved_display }}
+                            {% if entry.saved_by %}· by {{ entry.saved_by }}{% endif %}
+                            · View only
+                        </p>
+                        {% if entry.transactions %}
+                        <div style="overflow-x: auto;">
+                            <table class="archive-month-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Description</th>
+                                        <th>Type</th>
+                                        <th style="text-align: right;">Gross</th>
+                                        <th style="text-align: right;">Net</th>
+                                        <th style="text-align: right;">VAT</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for txn in entry.transactions %}
+                                    <tr>
+                                        <td style="font-family: var(--font-mono); font-size: 12px;">{{ txn.transaction_date }}</td>
+                                        <td>{{ txn.description }}</td>
+                                        <td>{{ txn.transaction_type }}</td>
+                                        <td style="text-align: right; font-family: var(--font-mono);">£{{ "{:,.2f}".format(txn.gross|float) }}</td>
+                                        <td style="text-align: right; font-family: var(--font-mono);">£{{ "{:,.2f}".format(txn.net|float) }}</td>
+                                        <td style="text-align: right; font-family: var(--font-mono);">£{{ "{:,.2f}".format(txn.vat|float) }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                        <p style="font-size: 13px; color: var(--text-muted); margin: 0;">No VAT transactions in this month.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% elif saveable_month %}
+        <p style="font-size: 13px; color: var(--text-secondary); margin: 0;">
+            No months saved yet. Click Save Month after approving a bank statement.
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <form method="POST" id="vatReturnForm">
         <input type="hidden" name="quarter_key" value="{{ quarter.quarter_key }}">
 
@@ -266,6 +354,55 @@
     background: var(--bg-base);
     border-top: 1px solid var(--border-subtle);
 }
+.vat-saved-months-accordion {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.vat-saved-month-item {
+    border-bottom: 1px solid var(--border-subtle);
+}
+.vat-saved-month-item:last-child {
+    border-bottom: none;
+}
+.vat-saved-month-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-elevated);
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: var(--text-primary);
+    flex-wrap: wrap;
+}
+.vat-saved-month-toggle:hover {
+    background: var(--bg-base);
+}
+.vat-saved-month-label {
+    font-weight: 600;
+    min-width: 140px;
+}
+.vat-saved-month-totals {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+.vat-saved-month-status {
+    font-size: 11px;
+}
+.vat-saved-month-panel-inner {
+    padding: 14px 16px 16px;
+    background: var(--bg-base);
+    border-top: 1px solid var(--border-subtle);
+}
 </style>
 
 <script>
@@ -303,6 +440,30 @@
     document.getElementById('vat-collapse-all')?.addEventListener('click', function() {
         document.querySelectorAll('.view-vat-btn').forEach(function(btn) {
             setExpanded(btn.dataset.quarterKey, false);
+        });
+    });
+
+    function savedMonthPanelId(monthKey) {
+        return 'vat-month-' + monthKey;
+    }
+
+    function setSavedMonthExpanded(monthKey, open) {
+        var detail = document.getElementById(savedMonthPanelId(monthKey));
+        var btn = document.querySelector('.view-saved-month-btn[data-month-key="' + monthKey + '"]');
+        if (!detail || !btn) return;
+        detail.style.display = open ? 'block' : 'none';
+        btn.dataset.expanded = open ? '1' : '0';
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        var chevron = btn.querySelector('.vat-history-chevron');
+        if (chevron) {
+            chevron.classList.toggle('expanded', open);
+        }
+    }
+
+    document.querySelectorAll('.view-saved-month-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var key = this.dataset.monthKey;
+            setSavedMonthExpanded(key, this.dataset.expanded !== '1');
         });
     });
 })();

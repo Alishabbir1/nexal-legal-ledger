@@ -301,3 +301,30 @@ def quarter_summary_from_boxes(boxes: dict[str, Decimal]) -> dict[str, Decimal]:
         'input_vat': boxes['box4'],
         'net_owed': boxes['box5'],
     }
+
+
+def calendar_month_label(year: int, month: int) -> str:
+    """Full month label e.g. November 2026."""
+    return date(year, month, 1).strftime('%B %Y')
+
+
+def iter_calendar_months_in_quarter(quarter: dict[str, Any]) -> list[tuple[int, int]]:
+    """Calendar (year, month) pairs overlapping a VAT quarter, in chronological order."""
+    start = parse_date(quarter.get('quarter_start'))
+    end = parse_date(quarter.get('quarter_end'))
+    if not start or not end:
+        return []
+    months = []
+    year, month = start.year, start.month
+    while date(year, month, 1) <= end:
+        months.append((year, month))
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return months
+
+
+def transaction_in_calendar_month(txn_date: Optional[str], year: int, month: int) -> bool:
+    d = parse_date(txn_date)
+    return bool(d and d.year == year and d.month == month)
