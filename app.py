@@ -1474,6 +1474,9 @@ def _collect_unsubmitted_vat_quarters(cycle_key: str, period_start=None) -> list
         if key:
             quarter_keys.add(key)
 
+    for key in db.list_vat_saved_month_quarter_keys():
+        quarter_keys.add(key)
+
     open_quarters = []
     for key in sorted(quarter_keys):
         rec = db.get_vat_return(key)
@@ -1492,12 +1495,14 @@ def _collect_unsubmitted_vat_quarters(cycle_key: str, period_start=None) -> list
             ),
             period_start,
         )
-        if not any(
+        has_vat_txns = any(
             t.get('vat_applicable')
             and not t.get('is_vat_excluded')
             and not t.get('is_deleted')
             for t in txns
-        ):
+        )
+        has_saved_months = bool(db.list_vat_saved_months(key))
+        if not has_vat_txns and not has_saved_months:
             continue
         open_quarters.append({
             'quarter': quarter,
@@ -1600,6 +1605,23 @@ def _vat_unsubmitted_quarter_reminders(
                 'with the new quarter.'
             ),
         })
+    return reminders
+
+
+def _vat_return_page_reminders(
+    cycle_key: str,
+    viewing_quarter_key: str,
+    settings: Optional[Dict] = None,
+) -> list:
+    """Amber reminders on the VAT Return page for other open quarters."""
+    reminders = _vat_unsubmitted_quarter_reminders(
+        cycle_key, viewing_quarter_key, settings
+    )
+    for item in reminders:
+        item['message'] = (
+            f'You have an unsubmitted VAT quarter ({item["period"]}) with '
+            'transactions. Click here to view and submit it.'
+        )
     return reminders
 
 
@@ -1790,6 +1812,102 @@ def _build_vat_history_entries(cycle_key: str) -> list:
             },
             'status': 'Submitted',
         })
+    return entries
+
+
+def _build_vat_full_history_entries(
+    cycle_key: str,
+    viewing_quarter_key: str,
+    vat_settings: Optional[Dict] = None,
+) -> list:
+    """All VAT quarters (submitted and open) with saved months and box figures."""
+    from lib.vat import quarter_period_label, parse_date
+
+    vat_settings = vat_settings or db.get_vat_settings()
+    period_start = _vat_period_start(vat_settings)
+
+    quarter_keys = set()
+    for rec in db.list_vat_returns(locked_only=True):
+        quarter_keys.add(rec['quarter_key'])
+    for item in _collect_unsubmitted_vat_quarters(cycle_key, period_start):
+        quarter_keys.add(item['quarter_key'])
+    for key in db.list_vat_saved_month_quarter_keys():
+        quarter_keys.add(key)
+
+    entries = []
+    for key in quarter_keys:
+        quarter, calculated, summary, vat_return, txns = _vat_quarter_context(
+            cycle_key, key, vat_settings=vat_settings
+        )
+        is_locked = bool(vat_return and vat_return.get('is_locked'))
+        saved_months = _build_vat_saved_month_entries(quarter, txns)
+
+        if is_locked:
+            status = 'Submitted'
+            status_label = 'Submitted ✓'
+            output_vat = Decimal(str(vat_return.get('box1') or 0))
+            input_vat = Decimal(str(vat_return.get('box4') or 0))
+            net_owed = Decimal(str(vat_return.get('box5') or 0))
+            display_boxes = {
+                f'box{i}': Decimal(str(vat_return.get(f'box{i}') or 0))
+                for i in range(1, 10)
+            }
+            box_column_label = 'Submitted figure'
+            submitted_at = vat_return.get('submitted_at') or ''
+            if submitted_at and len(submitted_at) >= 10:
+                try:
+                    submitted_display = datetime.strptime(
+                        submitted_at[:10], '%Y-%m-%d'
+                    ).strftime('%d %b %Y')
+                except ValueError:
+                    submitted_display = submitted_at[:10]
+            else:
+                submitted_display = '—'
+        elif key == viewing_quarter_key:
+            status = 'Current'
+            status_label = 'Current'
+            output_vat = summary['output_vat']
+            input_vat = summary['input_vat']
+            net_owed = summary['net_owed']
+            display_boxes = _vat_user_figures(vat_return, calculated)
+            box_column_label = 'Your figure'
+            submitted_display = None
+        else:
+            status = 'Unsubmitted'
+            status_label = 'Unsubmitted'
+            output_vat = summary['output_vat']
+            input_vat = summary['input_vat']
+            net_owed = summary['net_owed']
+            display_boxes = calculated
+            box_column_label = 'Calculated'
+            submitted_display = None
+
+        q_end = parse_date(quarter['quarter_end'])
+        entries.append({
+            'quarter': quarter,
+            'quarter_key': key,
+            'period': quarter_period_label(quarter),
+            'quarter_end_display': (
+                q_end.strftime('%d %b %Y') if q_end else quarter['quarter_end']
+            ),
+            'output_vat': output_vat,
+            'input_vat': input_vat,
+            'net_owed': net_owed,
+            'status': status,
+            'status_label': status_label,
+            'saved_months': saved_months,
+            'display_boxes': display_boxes,
+            'box_column_label': box_column_label,
+            'submitted_display': submitted_display,
+            'hmrc_reference': (
+                vat_return.get('hmrc_reference') if is_locked and vat_return else None
+            ),
+            'submitted_by': (
+                vat_return.get('submitted_by') if is_locked and vat_return else None
+            ),
+        })
+
+    entries.sort(key=lambda item: item['quarter']['quarter_end'], reverse=True)
     return entries
 
 
@@ -2456,6 +2574,16 @@ def vat_return():
                 'label': calendar_month_label(raw_saveable['year'], raw_saveable['month']),
             }
 
+    open_quarters = _collect_unsubmitted_vat_quarters(
+        cycle, _vat_period_start(settings)
+    )
+    vat_return_reminders = _vat_return_page_reminders(
+        cycle, quarter['quarter_key'], settings
+    )
+    vat_full_history = _build_vat_full_history_entries(
+        cycle, quarter['quarter_key'], settings
+    )
+
     return render_template(
         'vat_return.html',
         quarter=quarter,
@@ -2466,10 +2594,12 @@ def vat_return():
         summary=summary,
         vat_return=vat_return,
         settings=settings,
-        submitted_history=_build_vat_history_entries(cycle),
         expand_key=expand_key,
         saved_months=saved_months,
         saveable_month=saveable_month,
+        open_quarters=open_quarters,
+        vat_return_reminders=vat_return_reminders,
+        vat_full_history=vat_full_history,
     )
 
 

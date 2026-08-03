@@ -5042,6 +5042,18 @@ class Database:
         finally:
             conn.close()
 
+    def list_vat_saved_month_quarter_keys(self) -> List[str]:
+        """Distinct quarter keys that have at least one saved month."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT quarter_key FROM vat_saved_months ORDER BY quarter_key"
+            )
+            return [row['quarter_key'] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
     def is_vat_month_saved(self, quarter_key: str, year: int, month: int) -> bool:
         conn = self.get_connection()
         try:

@@ -490,7 +490,7 @@ def test_vat_history_shows_submitted_boxes(client):
 
     resp = client.get(f"/office-account/vat/return?expand={quarter['quarter_key']}")
     assert resp.status_code == 200
-    assert b"Quarter History" in resp.data
+    assert b"VAT History" in resp.data
     assert b"Submitted figure" in resp.data
     assert b"150.00" in resp.data
     assert b"Submitted" in resp.data
@@ -657,6 +657,105 @@ def test_unsubmitted_prior_quarter_reminder(client):
     assert reminders_after == []
     resp2 = client.get("/office-account")
     assert b"Unsubmitted VAT Quarter" not in resp2.data
+
+
+def test_vat_return_shows_unsubmitted_quarter_reminder(client):
+    """VAT Return page shows amber alert for older open quarters."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("feb_may_aug_nov", "admin")
+    from lib.vat import quarter_for_date
+    from datetime import date
+
+    nov_key = quarter_for_date(date(2026, 11, 15), "feb_may_aug_nov")["quarter_key"]
+    dec_key = quarter_for_date(date(2026, 12, 15), "feb_may_aug_nov")["quarter_key"]
+    _insert_vat_receipt(db, "2026-11-15")
+    _insert_vat_receipt(db, "2026-12-10")
+
+    resp = client.get("/office-account/vat/return")
+    assert resp.status_code == 200
+    assert b"Unsubmitted VAT Quarter" in resp.data
+    assert b"Click here to view and submit it" in resp.data
+    assert f"quarter={nov_key}".encode() in resp.data
+
+    resp_nov = client.get(f"/office-account/vat/return?quarter={nov_key}")
+    assert resp_nov.status_code == 200
+    assert nov_key.encode() in resp_nov.data
+
+
+def test_vat_return_quarter_selector_lists_open_quarters(client):
+    """Quarter selector lists all open quarters for instant switching."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("feb_may_aug_nov", "admin")
+    from lib.vat import quarter_for_date
+    from datetime import date
+
+    nov_key = quarter_for_date(date(2026, 11, 15), "feb_may_aug_nov")["quarter_key"]
+    dec_key = quarter_for_date(date(2026, 12, 15), "feb_may_aug_nov")["quarter_key"]
+    _insert_vat_receipt(db, "2026-11-15")
+    _insert_vat_receipt(db, "2026-12-10")
+
+    resp = client.get("/office-account/vat/return")
+    assert resp.status_code == 200
+    assert b"vat-quarter-select" in resp.data
+    assert nov_key.encode() in resp.data
+    assert dec_key.encode() in resp.data
+
+    resp_nov = client.get(f"/office-account/vat/return?quarter={nov_key}")
+    assert resp_nov.status_code == 200
+    assert b"200.00" in resp_nov.data
+
+
+def test_vat_full_history_shows_all_quarter_statuses(client):
+    """VAT History lists unsubmitted, current, and submitted quarters."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("mar_jun_sep_dec", "admin")
+    from lib.vat import quarter_for_date
+    from datetime import date
+
+    q3 = quarter_for_date(date(2026, 9, 15), "mar_jun_sep_dec")
+    q4 = quarter_for_date(date(2026, 11, 15), "mar_jun_sep_dec")
+    _insert_vat_receipt(db, "2026-09-15")
+    _insert_vat_receipt(db, "2026-11-15")
+
+    db.submit_vat_return(
+        q3["quarter_key"],
+        {f"box{i}": Decimal("200.00") if i == 1 else Decimal("0") for i in range(1, 10)},
+        "admin",
+    )
+
+    resp = client.get(f"/office-account/vat/return?quarter={q4['quarter_key']}")
+    assert resp.status_code == 200
+    assert b"VAT History" in resp.data
+    assert b"Unsubmitted" in resp.data or b"Current" in resp.data
+    assert b"Submitted" in resp.data
+
+
+def test_saved_month_visible_in_history_when_viewing_other_quarter(client):
+    """Saved months appear in VAT History even when viewing a different quarter."""
+    _login_admin(client)
+    db = app_module.db
+    db.save_vat_setup("feb_may_aug_nov", "admin")
+    from lib.vat import quarter_for_date
+    from datetime import date
+
+    nov_key = quarter_for_date(date(2026, 11, 15), "feb_may_aug_nov")["quarter_key"]
+    dec_key = quarter_for_date(date(2026, 12, 15), "feb_may_aug_nov")["quarter_key"]
+    _insert_vat_receipt(db, "2026-11-15")
+    _insert_vat_receipt(db, "2026-12-10")
+
+    client.post(
+        "/office-account/vat/return/save-month",
+        data={"quarter_key": nov_key, "year": "2026", "month": "11"},
+        follow_redirects=True,
+    )
+
+    resp = client.get(f"/office-account/vat/return?quarter={dec_key}")
+    assert resp.status_code == 200
+    assert b"November 2026" in resp.data
+    assert b"Saved Months" in resp.data
 
 
 def _insert_vat_payment(db, txn_date: str, amount: str = "240"):
